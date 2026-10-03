@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="EarnApp setup script and instructions for Termux on Android.">
+    <title>EarnApp Setup for Termux</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 44rem; margin: 10vh auto; padding: 0 1.25rem; line-height: 1.6; }
+      h1 { line-height: 1.2; }
+      code { overflow-wrap: anywhere; }
+      a { color: #268bd2; }
+      .actions { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.5rem 0; }
+      .actions a { padding: .65rem 1rem; border: 1px solid currentColor; border-radius: .4rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>EarnApp setup for Termux</h1>
+      <p>Install and supervise EarnApp on Android with Termux and udocker.</p>
+      <p>Download the script and run it from Termux. It does not require root or <code>sudo</code>.</p>
+      <pre><code>curl -fsSL https://earnapp-termux.dinesh29.com.np/earnapp-setup.sh -o earnapp-setup.sh
+bash earnapp-setup.sh</code></pre>
+      <nav class="actions" aria-label="Project links">
+        <a href="/earnapp-setup.sh">Download installer</a>
+        <a href="__REPOSITORY_URL__">View source on GitHub</a>
+      </nav>
+      <p>EarnApp service logs: <code>tail -f "$PREFIX/var/log/sv/earnapp/current"</code></p>
+    </main>
+  </body>
+</html>
