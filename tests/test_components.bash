@@ -71,6 +71,18 @@ out=$(HOME="$_wd_home" PATH="$MOCKDIR21" setup_cloudflared 2>&1); rc=$?
 check "cloudflared install only" "$out" "pkg install cloudflared -y" "$rc"
 rm -rf "$MOCKDIR21"
 
+MOCKDIR40="$(mktemp -d)"
+out=$(PATH="$MOCKDIR40" setup_speedtest_go 2>&1); rc=$?
+check "speedtest-go installs through Termux package manager" "$out" "pkg install speedtest-go -y" "$rc"
+rm -rf "$MOCKDIR40"
+
+MOCKDIR41="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR41/speedtest-go"
+chmod +x "$MOCKDIR41/speedtest-go"
+out=$(PATH="$MOCKDIR41" setup_speedtest_go 2>&1); rc=$?
+check "speedtest-go skips install when already present" "$out" "speedtest-go already installed" "$rc"
+rm -rf "$MOCKDIR41"
+
 MOCKDIR22="$(mktemp -d)"
 out=$(PATH="$MOCKDIR22" setup_udocker 2>&1); rc=$?
 check "udocker install fallback" "$out" "pkg install udocker -y" "$rc"
@@ -103,9 +115,9 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-: > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR4="$(mktemp -d)"
-for tool in udocker sv-enable sshd cloudflared; do
+for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR4/$tool"
   chmod +x "$MOCKDIR4/$tool"
 done
@@ -386,8 +398,8 @@ reset_state
 MOCKDIR3="$(mktemp -d)"
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-: > "$_wd_home/.termux/boot/start-services"
-for tool in udocker sv-enable sshd cloudflared; do
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
+for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR3/$tool"
   chmod +x "$MOCKDIR3/$tool"
 done
@@ -408,12 +420,18 @@ if PATH="$MOCKDIR3:$PATH" comp_tool_present udocker; then
 else
   fail=$((fail + 1)); printf 'FAIL  comp_tool_present udocker\n' >&2
 fi
+if PATH="$MOCKDIR3:$PATH" comp_tool_present speedtest-go; then
+  pass=$((pass + 1)); printf 'PASS  comp_tool_present speedtest-go present\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  comp_tool_present speedtest-go present\n' >&2
+fi
 if ( HOME="$_wd_home" PATH="$MOCKDIR3:$PATH" plan_tools_present ); then
   pass=$((pass + 1)); printf 'PASS  plan_tools_present all present\n'
 else
   fail=$((fail + 1)); printf 'FAIL  plan_tools_present all present\n' >&2
 fi
 rm -f "$MOCKDIR3/udocker"
+rm -f "$MOCKDIR3/speedtest-go"
 out=$(PATH="$MOCKDIR3:$PATH" plan_tools_present 2>&1); rc=$?
 if [ "$rc" -eq 1 ] && [ -z "$out" ]; then
   pass=$((pass + 1)); printf 'PASS  plan_tools_present missing udocker -> not present\n'
@@ -425,6 +443,12 @@ if [ "$rc" -eq 1 ] && [ -z "$out" ]; then
   pass=$((pass + 1)); printf 'PASS  comp_tool_present udocker absent\n'
 else
   fail=$((fail + 1)); printf 'FAIL  comp_tool_present udocker absent (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+out=$(PATH="$MOCKDIR3:$PATH" comp_tool_present speedtest-go 2>&1); rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'PASS  comp_tool_present speedtest-go absent\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  comp_tool_present speedtest-go absent\n' >&2
 fi
 rm -rf "$MOCKDIR3" "$_wd_home"
 
@@ -1055,11 +1079,11 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-: > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR17="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR17/sv-enable"
 chmod +x "$MOCKDIR17/sv-enable"
-( HOME="$_wd_home" PATH="$MOCKDIR17" comp_tool_present boot ); rc=$?
+( HOME="$_wd_home" PATH="$MOCKDIR17:/usr/bin:/bin" comp_tool_present boot ); rc=$?
 rm -rf "$MOCKDIR17" "$_wd_home"
 if [ "$rc" -eq 0 ]; then
   pass=$((pass + 1)); printf 'PASS  comp_tool_present boot true with sv-enable and script\n'

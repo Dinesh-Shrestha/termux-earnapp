@@ -1,7 +1,8 @@
 # Termux EarnApp Setup
 
 A community setup script for running EarnApp on Android through Termux and
-udocker. It can also set up Termux:Boot, SSH, Cloudflared, and udocker.
+udocker. It can also set up Termux:Boot, SSH, Cloudflared, udocker, and the
+speedtest-go CLI.
 
 ## Install in Termux
 
@@ -14,9 +15,11 @@ curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-se
 bash earnapp-setup.sh
 ```
 
-Choose **6** for the EarnApp service setup or **7** for all menu options. Open
-Termux:Boot once and disable battery optimization for Termux and Termux:Boot if
-you want services to start after reboot.
+Choose **6** for EarnApp, **7** to install speedtest-go, or **8** for all menu
+options. speedtest-go is an on-demand CLI; run `speedtest-go` when you want to
+test the device's internet connection. It does not run as a background service.
+Open Termux:Boot once and disable battery optimization for Termux and
+Termux:Boot if you want services to start after reboot.
 
 ## EarnApp logs
 

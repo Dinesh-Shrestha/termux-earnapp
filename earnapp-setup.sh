@@ -111,6 +111,7 @@ deps_of() {
     cloudflared) printf 'base\nboot\n' ;;
     udocker)     echo base ;;
     earnapp)     printf 'base\nboot\nudocker\n' ;;
+    speedtest-go) echo base ;;
   esac
 }
 
@@ -154,6 +155,7 @@ comp_tool_present() {
     sshd)         command -v sshd >/dev/null 2>&1 ;;
     cloudflared)  command -v cloudflared >/dev/null 2>&1 ;;
     udocker|earnapp) command -v udocker >/dev/null 2>&1 ;;
+    speedtest-go) command -v speedtest-go >/dev/null 2>&1 ;;
     *)            return 0 ;;
   esac
 }
@@ -357,6 +359,12 @@ setup_cloudflared() {
   log INFO "Cloudflared: ensuring the package and Termux service prerequisites (service setup is manual)"
   ensure_pkg cloudflared cloudflared
   log INFO "Configure tunnels manually: cloudflared tunnel login && cloudflared service install"
+}
+
+setup_speedtest_go() {
+  log INFO "Speedtest-Go: ensuring the CLI package is installed"
+  ensure_pkg speedtest-go speedtest-go
+  log INFO "Run speedtest-go whenever you want to test this device's internet connection"
 }
 
 setup_udocker() {
@@ -664,6 +672,7 @@ run_component() {
     cloudflared) setup_cloudflared ;;
     udocker)     setup_udocker ;;
     earnapp)     setup_earnapp ;;
+    speedtest-go) setup_speedtest_go ;;
     *)           die "Unknown component: $1" ;;
   esac
 }
@@ -685,6 +694,7 @@ Components:
   --cloudflared        Install cloudflared only
   --udocker            Install + verify udocker
   --earnapp            Full EarnApp bring-up (base + boot + udocker + image + service)
+  --speedtest-go       Install the speedtest-go CLI
   --no-<component>     Strip a component (useful with --all), e.g. --no-sshd
 
 UUID:
@@ -699,7 +709,8 @@ Behavior:
 Examples:
   earnapp-setup.sh
   earnapp-setup.sh --earnapp --yes
-  earnapp-setup.sh --all --no-sshd
+  earnapp-setup.sh --speedtest-go
+  earnapp-setup.sh --all --no-sshd --no-speedtest-go
   earnapp-setup.sh --earnapp --uuid sdk-node-00000000000000000000000000000000
   wget -qO- https://example.com/earnapp-setup.sh | bash
 USAGE
@@ -723,19 +734,21 @@ parse_args() {
     a=$1
     shift
     case "$a" in
-      --all|-a)         REQUESTED+=(base boot sshd cloudflared udocker earnapp) ;;
+      --all|-a)         REQUESTED+=(base boot sshd cloudflared udocker earnapp speedtest-go) ;;
       --base)           REQUESTED+=(base) ;;
       --boot)           REQUESTED+=(boot) ;;
       --sshd)           REQUESTED+=(sshd) ;;
       --cloudflared)    REQUESTED+=(cloudflared) ;;
       --udocker)        REQUESTED+=(udocker) ;;
       --earnapp)        REQUESTED+=(earnapp) ;;
+      --speedtest-go)   REQUESTED+=(speedtest-go) ;;
       --no-base)        SKIPPED+=(base) ;;
       --no-boot)        SKIPPED+=(boot) ;;
       --no-sshd)        SKIPPED+=(sshd) ;;
       --no-cloudflared) SKIPPED+=(cloudflared) ;;
       --no-udocker)     SKIPPED+=(udocker) ;;
       --no-earnapp)     SKIPPED+=(earnapp) ;;
+      --no-speedtest-go) SKIPPED+=(speedtest-go) ;;
       --uuid)
         [ $# -gt 0 ] || die "--uuid requires a value"
         case "$1" in
@@ -753,7 +766,7 @@ parse_args() {
   done
   if [ "${#REQUESTED[@]}" -eq 0 ]; then
     if [ "${#SKIPPED[@]}" -gt 0 ]; then
-      REQUESTED=(base boot sshd cloudflared udocker earnapp)
+      REQUESTED=(base boot sshd cloudflared udocker earnapp speedtest-go)
     else
       MODE="menu"
       return 0
@@ -762,7 +775,7 @@ parse_args() {
   MODE="flags"
   local -a finals=()
   local c
-  for c in base boot sshd cloudflared udocker earnapp; do
+  for c in base boot sshd cloudflared udocker earnapp speedtest-go; do
     if ! list_contains "$c" "${SKIPPED[@]}" && list_contains "$c" "${REQUESTED[@]}"; then
       finals+=("$c")
     fi
@@ -813,9 +826,10 @@ menu() {
     printf ' 4) Cloudflared + service prerequisites\n'
     printf ' 5) udocker (install + verify)\n'
     printf ' 6) EarnApp full bring-up (includes 1, 2, 5)\n'
-    printf ' 7) Everything (1-6)\n'
+    printf ' 7) speedtest-go (install CLI)\n'
+    printf ' 8) Everything (1-7)\n'
     printf ' 0) Quit\n'
-    printf 'Select an option [0-7]: '
+    printf 'Select an option [0-8]: '
     if ! read -r opt; then
       log WARN "No input (EOF); exiting"
       return 0
@@ -827,7 +841,8 @@ menu() {
       4) menu_run cloudflared ;;
       5) menu_run udocker ;;
       6) menu_run earnapp ;;
-      7) menu_run base boot sshd cloudflared udocker earnapp ;;
+      7) menu_run speedtest-go ;;
+      8) menu_run base boot sshd cloudflared udocker earnapp speedtest-go ;;
       0) return 0 ;;
       *) log WARN "Invalid option: $opt"; continue ;;
     esac

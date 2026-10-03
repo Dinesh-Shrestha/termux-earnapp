@@ -64,6 +64,20 @@ t_eq "--earnapp sets flags mode" "flags" "$MODE"
 t_contains "--earnapp requests earnapp" earnapp "${REQUESTED[@]}"
 
 reset_state
+parse_args --speedtest-go
+t_contains "--speedtest-go requests package" speedtest-go "${REQUESTED[@]}"
+resolve_request speedtest-go >/dev/null
+t_eq "speedtest-go resolves base dependency" "base speedtest-go" "${_ord[*]}"
+
+reset_state
+parse_args --all
+t_contains "--all includes speedtest-go" speedtest-go "${REQUESTED[@]}"
+
+reset_state
+parse_args --all --no-speedtest-go
+t_not_contains "--no-speedtest-go strips optional package" speedtest-go "${REQUESTED[@]}"
+
+reset_state
 parse_args --all --no-sshd
 t_contains    "--all keeps boot"              boot        "${REQUESTED[@]}"
 t_contains    "--all keeps earnapp"           earnapp     "${REQUESTED[@]}"
@@ -133,7 +147,7 @@ _wd_sshd="$(printf '%s\n' "$out" | grep -n '=== sshd ===' | head -n 1 | cut -d: 
 t_eq "menu_run runs base before sshd" "ordered" \
   "$([ -n "$_wd_pu" ] && [ -n "$_wd_sshd" ] && [ "$_wd_pu" -lt "$_wd_sshd" ] && echo ordered || echo misordered)"
 
-for _wd_opt in boot cloudflared udocker; do
+for _wd_opt in boot udocker; do
   reset_state
   DRY_RUN=1
   _wd_m="$(mktemp -d)"
@@ -142,6 +156,35 @@ for _wd_opt in boot cloudflared udocker; do
   rm -rf "$_wd_m" "$_wd_h"
   t_eq "menu_run $_wd_opt resolves dependencies" "base $_wd_opt" "$(plan_of "$_wd_o")"
 done
+
+reset_state
+DRY_RUN=1
+_wd_m="$(mktemp -d)"
+_wd_h="$(mktemp -d)"
+_wd_o=$(HOME="$_wd_h" PATH="$_wd_m" menu_run cloudflared 2>&1)
+rm -rf "$_wd_m" "$_wd_h"
+t_eq "menu_run cloudflared includes service prerequisites" "base boot cloudflared" "$(plan_of "$_wd_o")"
+
+reset_state
+DRY_RUN=1
+MOCKDIR42="$(mktemp -d)"
+_wd_h="$(mktemp -d)"
+_wd_o=$(HOME="$_wd_h" PATH="$MOCKDIR42" menu_run speedtest-go 2>&1)
+rm -rf "$MOCKDIR42" "$_wd_h"
+t_eq "menu_run speedtest-go resolves base dependency" "base speedtest-go" "$(plan_of "$_wd_o")"
+t_has "menu_run speedtest-go refreshes Termux package lists" "pkg update -y" "$_wd_o"
+t_has "menu_run speedtest-go installs Termux package" "pkg install speedtest-go -y" "$_wd_o"
+
+reset_state
+DRY_RUN=1
+MOCKDIR43="$(mktemp -d)"
+_wd_h="$(mktemp -d)"
+_wd_o=$( { is_termux() { return 0; }
+  HOME="$_wd_h" PATH="$MOCKDIR43:/usr/bin:/bin" menu
+} <<< "7" 2>&1 )
+rm -rf "$MOCKDIR43" "$_wd_h"
+t_has "menu exposes speedtest-go option" "7) speedtest-go (install CLI)" "$_wd_o"
+t_eq "menu option 7 dispatches speedtest-go" "base speedtest-go" "$(plan_of "$_wd_o")"
 
 reset_state
 DRY_RUN=1
