@@ -10,7 +10,6 @@ The script is interactive. Download it, inspect it if you like, then run it as
 the Termux app user; `sudo` is not used.
 
 ```sh
-pkg install curl
 curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-setup.sh
 bash earnapp-setup.sh
 ```
