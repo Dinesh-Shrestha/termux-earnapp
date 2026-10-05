@@ -133,7 +133,7 @@
               <span class="terminal-label">TERMUX</span>
               <button class="copy-button" type="button" id="copy-command" aria-describedby="copy-status">Copy command</button>
             </div>
-            <pre><code id="install-command">pkg install curl -y &amp;&amp; curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-setup.sh &amp;&amp; bash earnapp-setup.sh</code></pre>
+            <pre><code id="install-command">curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-setup.sh &amp;&amp; bash earnapp-setup.sh</code></pre>
           </div>
           <p class="install-note">The script downloads to your current Termux directory so you can inspect it before running it.</p>
           <p id="copy-status" class="sr-only" role="status" aria-live="polite"></p>
