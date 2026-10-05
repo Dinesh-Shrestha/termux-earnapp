@@ -136,13 +136,25 @@ reset_state
 DRY_RUN=1
 MOCKDIR30="$(mktemp -d)"
 _wd_home="$(mktemp -d)"
-out=$(HOME="$_wd_home" PATH="$MOCKDIR30" menu_run sshd 2>&1); rc=$?
+out=$(HOME="$_wd_home" PREFIX="$_wd_home/prefix" SVDIR="" PATH="$MOCKDIR30" menu_run sshd 2>&1); rc=$?
 rm -rf "$MOCKDIR30" "$_wd_home"
 t_eq "menu_run sshd resolves to base boot sshd" "base boot sshd" "$(plan_of "$out")"
 t_has "menu_run sshd refreshes package lists" "pkg update -y" "$out"
 t_has "menu_run sshd reaches the sshd component" "=== sshd ===" "$out"
 t_has "service plan explains current-shell service commands" '. "$PREFIX/etc/profile.d/start-services.sh"' "$out"
-t_has "service plan offers reopening Termux" "exit and reopen Termux" "$out"
+t_has "service plan offers reopening Termux" "open a new Termux session" "$out"
+
+reset_state
+DRY_RUN=1
+_wd_h="$(mktemp -d)"
+_wd_m="$(mktemp -d)"
+_wd_o=$(HOME="$_wd_h" PREFIX="$_wd_h/prefix" SVDIR="$_wd_h/prefix/var/service" PATH="$_wd_m" menu_run sshd 2>&1)
+rm -rf "$_wd_m" "$_wd_h"
+case "$_wd_o" in
+  *'. "$PREFIX/etc/profile.d/start-services.sh"'*)
+    fail=$((fail + 1)); printf 'FAIL  service plan suppresses notice when Termux services are already loaded\n' >&2 ;;
+  *) pass=$((pass + 1)); printf 'PASS  service plan suppresses notice when Termux services are already loaded\n' ;;
+esac
 
 _wd_pu="$(printf '%s\n' "$out" | grep -n 'pkg update -y' | head -n 1 | cut -d: -f1)"
 _wd_sshd="$(printf '%s\n' "$out" | grep -n '=== sshd ===' | head -n 1 | cut -d: -f1)"

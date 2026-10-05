@@ -812,7 +812,7 @@ parse_args() {
 }
 
 run_setup() {
-  local plan c s
+  local plan c s svdir_at_launch=${SVDIR:-}
   resolve_request "${REQUESTED[@]}" >/dev/null
   plan=("${_ord[@]}")
   for s in "${SKIPPED[@]}"; do
@@ -826,13 +826,16 @@ run_setup() {
     run_component "$c" || die "Component $c failed"
   done
   log INFO "All done."
-  if list_contains boot "${plan[@]}" \
-     || list_contains sshd "${plan[@]}" \
-     || list_contains cloudflared "${plan[@]}" \
-     || list_contains earnapp "${plan[@]}"; then
-    log INFO 'For sv commands in this terminal, run: . "$PREFIX/etc/profile.d/start-services.sh"'
-    log INFO "Or exit and reopen Termux to load the service environment."
+  if [ "$svdir_at_launch" != "${PREFIX:-}/var/service" ] \
+     && { list_contains boot "${plan[@]}" \
+       || list_contains sshd "${plan[@]}" \
+       || list_contains cloudflared "${plan[@]}" \
+       || list_contains earnapp "${plan[@]}"; }; then
+    log INFO "This shell hasn't loaded Termux services. To use sv here, run:"
+    log INFO '  . "$PREFIX/etc/profile.d/start-services.sh"'
+    log INFO "Or exit and open a new Termux session; skip if sv status already works."
   fi
+  return 0
 }
 
 menu_run() {
