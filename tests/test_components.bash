@@ -47,6 +47,26 @@ check "boot writes start-services"    "$out" "start-services" "$rc"
 check "boot prints boot reminder"      "$out" "Termux:Boot" "$rc"
 rm -rf "$MOCKDIR19"
 
+_wd_prefix_services="$(mktemp -d)"
+_wd_home_services="$(mktemp -d)"
+MOCKDIR_SERVICES="$(mktemp -d)"
+mkdir -p "$_wd_prefix_services/etc/profile.d"
+cat > "$_wd_prefix_services/etc/profile.d/start-services.sh" <<'SH'
+printf 'started\n' >> "$TERMUX_SERVICES_TEST_MARKER"
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICES/sv-enable"
+chmod +x "$MOCKDIR_SERVICES/sv-enable"
+TERMUX_SERVICES_TEST_MARKER="$_wd_prefix_services/started" \
+  DRY_RUN=0 PREFIX="$_wd_prefix_services" HOME="$_wd_home_services" \
+  PATH="$MOCKDIR_SERVICES:/usr/bin:/bin" setup_boot >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ -s "$_wd_prefix_services/started" ]; then
+  pass=$((pass + 1)); printf 'PASS  boot starts termux-services in the current setup run\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  boot starts termux-services in the current setup run (exit %s)\n' "$rc" >&2
+fi
+rm -rf "$MOCKDIR_SERVICES" "$_wd_home_services" "$_wd_prefix_services"
+
 MOCKDIR20="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nprintf "down: %%s: 1s, normally down\\n" "$2"\n' > "$MOCKDIR20/sv"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR20/sv-enable"
@@ -54,7 +74,11 @@ chmod +x "$MOCKDIR20/sv" "$MOCKDIR20/sv-enable"
 out=$(HOME="$_wd_home" PATH="$MOCKDIR20" setup_sshd 2>&1); rc=$?
 check "sshd installs openssh" "$out" "pkg install openssh -y" "$rc"
 check "sshd sv-enable"        "$out" "sv-enable sshd" "$rc"
-check "sshd sv up"            "$out" "sv up sshd" "$rc"
+if [ "$rc" -eq 0 ] && case "$out" in *"[run] sv up sshd"*) false ;; *) true ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  sshd relies on sv-enable to start the service\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  sshd redundantly calls sv up (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
 case "$out" in
   *password*|*passwd*) _wd_pwleak=1 ;;
   *) _wd_pwleak=0 ;;
@@ -183,7 +207,11 @@ rm -rf "$MOCKDIR30"
 check "earnapp pulls via platform flag" "$out" "udocker pull --platform=" "$rc"
 check "earnapp creates container"       "$out" "udocker create --name=earnapp" "$rc"
 check "earnapp sv-enable"               "$out" "sv-enable earnapp" "$rc"
-check "earnapp sv up"                   "$out" "sv up earnapp" "$rc"
+if [ "$rc" -eq 0 ] && case "$out" in *"[run] sv up earnapp"*) false ;; *) true ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  earnapp relies on sv-enable to start the service\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  earnapp redundantly calls sv up (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
 check "earnapp register link"           "$out" "https://earnapp.com/r/sdk-node-$HEX32" "$rc"
 check "earnapp echoes chosen uuid"      "$out" "sdk-node-$HEX32" "$rc"
 
@@ -1025,10 +1053,57 @@ rm -rf "$MOCKDIR14" "$_wd_prefix"
 PREFIX="$_wd_saved"
 if [ "$rc" -eq 0 ] && [ "$_wd_started" -eq 1 ] \
    && case "$out" in *"sv-enable sshd"*) true ;; *) false ;; esac \
-   && case "$out" in *"sv up sshd"*) true ;; *) false ;; esac; then
+   && case "$out" in *"[run] sv up sshd"*) false ;; *) true ;; esac; then
   pass=$((pass + 1)); printf 'PASS  ensure_service starts a stopped service\n'
 else
   fail=$((fail + 1)); printf 'FAIL  ensure_service start (rc=%s started=%s)\n%s\n' "$rc" "$_wd_started" "$out" >&2
+fi
+
+reset_state
+DRY_RUN=0
+_wd_saved=${PREFIX:-}
+_wd_savedpath=$PATH
+_wd_prefix="$(mktemp -d)"
+mkdir -p "$_wd_prefix/var/service/earnapp"
+MOCKDIR_SERVICE_WAIT="$(mktemp -d)"
+cat > "$MOCKDIR_SERVICE_WAIT/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  printf 'down: %s: 1s, normally down\n' "$2"
+elif [ "$1" = up ]; then
+  printf 'up\n' >> "$TERMUX_SERVICE_CALLS"
+  [ -e "$TERMUX_SERVICE_PREFIX/var/service/$2/supervise/ok" ]
+fi
+SH
+cat > "$MOCKDIR_SERVICE_WAIT/sv-enable" <<'SH'
+#!/usr/bin/env bash
+[ -e "$TERMUX_SERVICE_PREFIX/var/service/$1/supervise/ok" ]
+sv up "$1"
+SH
+chmod +x "$MOCKDIR_SERVICE_WAIT/sv" "$MOCKDIR_SERVICE_WAIT/sv-enable"
+PREFIX="$_wd_prefix"
+export TERMUX_SERVICE_PREFIX="$_wd_prefix"
+export TERMUX_SERVICE_CALLS="$_wd_prefix/sv-calls"
+PATH="$MOCKDIR_SERVICE_WAIT:$_wd_savedpath"
+(
+  sleep 0.2
+  mkdir -p "$_wd_prefix/var/service/earnapp/supervise"
+  : > "$_wd_prefix/var/service/earnapp/supervise/ok"
+) &
+out=$(ensure_service earnapp 2>&1); rc=$?
+_wd_started=$SERVICE_JUST_STARTED
+wait
+_wd_up_calls=0
+[ -f "$TERMUX_SERVICE_CALLS" ] && _wd_up_calls=$(wc -l < "$TERMUX_SERVICE_CALLS")
+PATH="$_wd_savedpath"
+rm -rf "$MOCKDIR_SERVICE_WAIT" "$_wd_prefix"
+PREFIX="$_wd_saved"
+if [ "$rc" -eq 0 ] && [ "$_wd_started" -eq 1 ] \
+   && case "$out" in *"sv-enable earnapp"*) true ;; *) false ;; esac \
+   && [ "$_wd_up_calls" -eq 1 ]; then
+  pass=$((pass + 1)); printf 'PASS  ensure_service waits for supervision and starts once via sv-enable\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure_service waits for supervision and starts once (rc=%s started=%s sv-up-calls=%s)\n%s\n' "$rc" "$_wd_started" "$_wd_up_calls" "$out" >&2
 fi
 
 reset_state

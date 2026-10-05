@@ -188,6 +188,19 @@ ensure_pkg() {
 
 SERVICE_JUST_STARTED=0
 
+wait_for_service_supervision() {
+  local name=$1 ready_file="${PREFIX:-}/var/service/$1/supervise/ok" attempt=0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  [ -e "$ready_file" ] && return 0
+  log INFO "Waiting for runit to register service $name"
+  while [ "$attempt" -lt 100 ]; do
+    [ -e "$ready_file" ] && return 0
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  [ -e "$ready_file" ] || die "runit did not create the supervise endpoint for $name within 10 seconds: $ready_file"
+}
+
 ensure_service() {
   local name=$1 down
   SERVICE_JUST_STARTED=0
@@ -206,8 +219,8 @@ ensure_service() {
   if [ -f "$down" ]; then
     log INFO "$name has a down file; re-enabling"
   fi
+  wait_for_service_supervision "$name"
   step sv-enable "$name" || die "sv-enable $name failed"
-  step sv up "$name" || die "sv up $name failed"
   SERVICE_JUST_STARTED=1
 }
 
@@ -307,10 +320,22 @@ termux-wake-lock
 EOF
 }
 
+start_termux_services() {
+  local hook="${PREFIX:-}/etc/profile.d/start-services.sh"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[source] $hook"
+    return 0
+  fi
+  [ -r "$hook" ] || die "termux-services startup hook not found: $hook"
+  log INFO "Starting termux-services supervisor for this setup run"
+  . "$hook" || die "failed to start the termux-services supervisor"
+}
+
 setup_boot() {
   local script created=0
   log INFO "Boot: ensuring termux-services and configuring Termux:Boot"
   ensure_pkg sv-enable termux-services
+  start_termux_services
   script=$(boot_script)
   if [ -f "$script" ] && boot_script_configured "$script"; then
     log INFO "Termux:Boot start-services script already configured"
