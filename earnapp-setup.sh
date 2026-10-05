@@ -826,6 +826,13 @@ run_setup() {
     run_component "$c" || die "Component $c failed"
   done
   log INFO "All done."
+  if list_contains boot "${plan[@]}" \
+     || list_contains sshd "${plan[@]}" \
+     || list_contains cloudflared "${plan[@]}" \
+     || list_contains earnapp "${plan[@]}"; then
+    log INFO 'For sv commands in this terminal, run: . "$PREFIX/etc/profile.d/start-services.sh"'
+    log INFO "Or exit and reopen Termux to load the service environment."
+  fi
 }
 
 menu_run() {

@@ -141,6 +141,8 @@ rm -rf "$MOCKDIR30" "$_wd_home"
 t_eq "menu_run sshd resolves to base boot sshd" "base boot sshd" "$(plan_of "$out")"
 t_has "menu_run sshd refreshes package lists" "pkg update -y" "$out"
 t_has "menu_run sshd reaches the sshd component" "=== sshd ===" "$out"
+t_has "service plan explains current-shell service commands" '. "$PREFIX/etc/profile.d/start-services.sh"' "$out"
+t_has "service plan offers reopening Termux" "exit and reopen Termux" "$out"
 
 _wd_pu="$(printf '%s\n' "$out" | grep -n 'pkg update -y' | head -n 1 | cut -d: -f1)"
 _wd_sshd="$(printf '%s\n' "$out" | grep -n '=== sshd ===' | head -n 1 | cut -d: -f1)"
@@ -174,6 +176,11 @@ rm -rf "$MOCKDIR42" "$_wd_h"
 t_eq "menu_run speedtest-go resolves base dependency" "base speedtest-go" "$(plan_of "$_wd_o")"
 t_has "menu_run speedtest-go refreshes Termux package lists" "pkg update -y" "$_wd_o"
 t_has "menu_run speedtest-go installs Termux package" "pkg install speedtest-go -y" "$_wd_o"
+case "$_wd_o" in
+  *'. "$PREFIX/etc/profile.d/start-services.sh"'*)
+    fail=$((fail + 1)); printf 'FAIL  speedtest-go does not show service shell notice\n' >&2 ;;
+  *) pass=$((pass + 1)); printf 'PASS  speedtest-go does not show service shell notice\n' ;;
+esac
 
 reset_state
 DRY_RUN=1
