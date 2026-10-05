@@ -3,9 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Set up EarnApp and useful Termux services on Android with one guided script.">
+    <meta name="description" content="Community guide to setting up EarnApp on Android with Termux and udocker. Learn the menu choice, registration, service status, and log commands.">
     <meta name="theme-color" content="#f5f7fb">
-    <title>Termux EarnApp Setup</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="canonical" href="https://termux-earnapp.dinesh29.com.np/">
+    <title>EarnApp for Termux: Android Setup Guide</title>
     <style>
       :root {
         color-scheme: light;
@@ -53,8 +55,25 @@
       .install-card { overflow: hidden; border: 1px solid #1e3154; border-radius: 1rem; background: #101b2e; color: #edf3ff; box-shadow: 0 18px 42px #142b4d1f; }
       .install-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .8rem 1rem; border-bottom: 1px solid #293a56; }
       .terminal-label { color: #afc2df; font-size: .73rem; font-weight: 800; letter-spacing: .12em; }
-      .copy-button { min-height: 2.5rem; padding: .45rem .8rem; border: 1px solid #667c9d; border-radius: .65rem; background: #233654; color: #fff; font: inherit; font-size: .82rem; font-weight: 700; cursor: pointer; }
+      .copy-button { display: inline-flex; width: 2.65rem; height: 2.65rem; flex: 0 0 auto; align-items: center; justify-content: center; padding: .55rem; border: 1px solid #667c9d; border-radius: .65rem; background: #233654; color: #fff; cursor: pointer; }
       .copy-button:hover { background: #31496c; }
+      .copy-button:active { transform: scale(.94); }
+      .copy-icon { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+      .copy-icon--success, .copy-icon--error { display: none; }
+      .copy-button.is-copied { border-color: #17845c; background: #17845c; animation: copy-success .36s ease-out; }
+      .copy-button.is-failed { border-color: #b33d48; background: #b33d48; animation: copy-failure .32s ease-out; }
+      .copy-button.is-copied .copy-icon--copy, .copy-button.is-failed .copy-icon--copy { display: none; }
+      .copy-button.is-copied .copy-icon--success, .copy-button.is-failed .copy-icon--error { display: block; }
+      @keyframes copy-success {
+        0% { transform: scale(1); }
+        45% { transform: scale(1.14); }
+        100% { transform: scale(1); }
+      }
+      @keyframes copy-failure {
+        0%, 100% { transform: translateX(0); }
+        30% { transform: translateX(-2px); }
+        70% { transform: translateX(2px); }
+      }
       .install-card pre { overflow-x: auto; margin: 0; padding: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
       .install-card code, .inline-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       .install-card code { color: #e2ecff; font-size: clamp(.78rem, 2.2vw, .9rem); line-height: 1.8; }
@@ -62,6 +81,11 @@
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
       .option-grid { display: grid; grid-template-columns: 1fr; gap: .85rem; }
+      .setup-steps { display: grid; gap: .75rem; margin: 0; padding: 0; list-style: none; }
+      .setup-step { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: .8rem; align-items: start; padding: 1rem; border: 1px solid #dbe2ed; border-radius: .95rem; background: #fff; }
+      .step-count { display: grid; width: 1.8rem; aspect-ratio: 1; place-items: center; border-radius: .55rem; background: #edf3fd; color: #285392; font-size: .78rem; font-weight: 800; }
+      .setup-step h3 { margin-bottom: .3rem; font-size: 1rem; }
+      .setup-step p { margin-bottom: 0; color: #586781; font-size: .92rem; }
       .option-card { height: 100%; padding: 1.1rem; border: 1px solid #dbe2ed; border-radius: .95rem; background: #fff; }
       .option-number { display: inline-grid; width: 1.8rem; aspect-ratio: 1; place-items: center; margin-bottom: .75rem; border-radius: .55rem; background: #edf3fd; color: #285392; font-size: .78rem; font-weight: 800; }
       .option-card h3 { margin-bottom: .35rem; font-size: 1rem; }
@@ -69,7 +93,8 @@
       .info-panel { display: grid; gap: 1rem; padding: 1.2rem; border: 1px solid #dbe2ed; border-radius: 1rem; background: #fff; }
       .info-panel h2 { margin-bottom: .4rem; font-size: 1.25rem; }
       .info-panel p { margin-bottom: 0; color: #586781; }
-      .log-command { display: block; overflow-wrap: anywhere; padding: .8rem; border-radius: .65rem; background: #f0f3f8; color: #263a5a; font-size: .82rem; }
+      .log-command-row { display: flex; align-items: center; gap: .65rem; }
+      .log-command { display: block; flex: 1; min-width: 0; overflow-wrap: anywhere; padding: .8rem; border-radius: .65rem; background: #f0f3f8; color: #263a5a; font-size: .82rem; }
       .site-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; padding-block: 1.5rem 2rem; border-top: 1px solid #dce3ee; color: #66748b; font-size: .82rem; }
       .site-footer a { color: #315a9e; font-weight: 650; text-underline-offset: .2rem; }
 
@@ -91,21 +116,21 @@
     </style>
   </head>
   <body>
-    <div class="shell">
+    <div class="shell" id="top">
       <header class="site-header">
         <a class="brand" href="#top" aria-label="Termux EarnApp Setup home">
-          <span class="brand-mark" aria-hidden="true">TA</span>
+          <span class="brand-mark" aria-hidden="true">&gt;_</span>
           <span>Termux EarnApp Setup</span>
         </a>
         <a class="header-link" href="__REPOSITORY_URL__">View source</a>
       </header>
 
-      <main id="top">
+      <main>
         <section class="hero" aria-labelledby="hero-title">
           <div>
             <p class="eyebrow">Android · Termux</p>
-            <h1 id="hero-title">Your Termux setup, <span>made easier.</span></h1>
-            <p class="lead">A guided setup script for EarnApp and useful Termux tools. Choose what you need from the menu and keep control of each step.</p>
+            <h1 id="hero-title">How to set up EarnApp in Termux</h1>
+            <p class="lead">A community guide to running EarnApp on Android with Termux and udocker. Follow the setup menu, register your device, and check the service logs.</p>
             <div class="actions">
               <a class="button button-primary" href="#install">Get started</a>
               <a class="button button-secondary" href="__REPOSITORY_URL__">Read the source</a>
@@ -131,12 +156,38 @@
           <div class="install-card">
             <div class="install-toolbar">
               <span class="terminal-label">TERMUX</span>
-              <button class="copy-button" type="button" id="copy-command" aria-describedby="copy-status">Copy command</button>
+              <button class="copy-button" type="button" id="copy-command" aria-label="Copy install command" title="Copy install command" aria-describedby="copy-status"><svg class="copy-icon copy-icon--copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"></path></svg><svg class="copy-icon copy-icon--success" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg><svg class="copy-icon copy-icon--error" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg></button>
             </div>
             <pre><code id="install-command">curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-setup.sh &amp;&amp; bash earnapp-setup.sh</code></pre>
           </div>
           <p class="install-note">The script downloads to your current Termux directory so you can inspect it before running it.</p>
           <p id="copy-status" class="sr-only" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="section" id="setup-guide" aria-labelledby="setup-guide-title">
+          <div class="section-heading">
+            <p class="eyebrow">Setup guide</p>
+            <h2 id="setup-guide-title">Install EarnApp on Termux in four steps</h2>
+            <p>The guided script prepares the Termux service environment and runs EarnApp in a udocker container.</p>
+          </div>
+          <ol class="setup-steps">
+            <li class="setup-step">
+              <span class="step-count" aria-hidden="true">1</span>
+              <div><h3>Run the installer</h3><p>Paste the command above into Termux. It downloads the script and opens its interactive menu.</p></div>
+            </li>
+            <li class="setup-step">
+              <span class="step-count" aria-hidden="true">2</span>
+              <div><h3>Select menu option 6</h3><p>Choose EarnApp full bring-up. The script prepares service startup, verifies udocker, and creates the EarnApp container.</p></div>
+            </li>
+            <li class="setup-step">
+              <span class="step-count" aria-hidden="true">3</span>
+              <div><h3>Register your device</h3><p>Open the registration link printed by the script to associate the device with your EarnApp account.</p></div>
+            </li>
+            <li class="setup-step">
+              <span class="step-count" aria-hidden="true">4</span>
+              <div><h3>Check service status and logs</h3><p>Run <code class="inline-code">sv status earnapp</code> to check the service. Use the log command below to view its output.</p></div>
+            </li>
+          </ol>
         </section>
 
         <section class="section" aria-labelledby="options-title">
@@ -164,8 +215,12 @@
               <h2 id="after-title">Check the EarnApp service log</h2>
               <p>Follow startup and service output directly from Termux.</p>
             </div>
-            <code class="log-command">tail -f "$PREFIX/var/log/sv/earnapp/current"</code>
+            <div class="log-command-row">
+              <code class="log-command" id="log-command">tail -f "$PREFIX/var/log/sv/earnapp/current"</code>
+              <button class="copy-button" type="button" id="copy-log-command" aria-label="Copy log command" title="Copy log command" aria-describedby="copy-log-status"><svg class="copy-icon copy-icon--copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"></path></svg><svg class="copy-icon copy-icon--success" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg><svg class="copy-icon copy-icon--error" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg></button>
+            </div>
           </div>
+          <p id="copy-log-status" class="sr-only" role="status" aria-live="polite"></p>
         </section>
       </main>
 
@@ -176,11 +231,6 @@
     </div>
     <script>
       (() => {
-        const button = document.getElementById("copy-command");
-        const command = document.getElementById("install-command");
-        const status = document.getElementById("copy-status");
-        let resetTimer;
-
         async function copyText(text) {
           if (navigator.clipboard && window.isSecureContext) {
             try {
@@ -204,18 +254,46 @@
           if (!copied) throw new Error("Clipboard copy failed");
         }
 
-        button.addEventListener("click", async () => {
-          clearTimeout(resetTimer);
-          try {
-            await copyText(command.textContent.trim());
-            button.textContent = "Copied";
-            status.textContent = "Install command copied to clipboard.";
-          } catch {
-            button.textContent = "Copy failed";
-            status.textContent = "Copy failed. Select the command and copy it manually.";
-          }
-          resetTimer = setTimeout(() => { button.textContent = "Copy command"; }, 2200);
-        });
+        function addCopyHandler(button, command, status, successMessage) {
+          const defaultLabel = button.getAttribute("aria-label");
+          const defaultTitle = button.getAttribute("title");
+          let resetTimer;
+
+          button.addEventListener("click", async () => {
+            clearTimeout(resetTimer);
+            button.classList.remove("is-copied", "is-failed");
+            try {
+              await copyText(command.textContent.trim());
+              button.classList.add("is-copied");
+              button.setAttribute("aria-label", "Copied");
+              button.setAttribute("title", "Copied");
+              status.textContent = successMessage;
+            } catch {
+              button.classList.add("is-failed");
+              button.setAttribute("aria-label", "Copy failed");
+              button.setAttribute("title", "Copy failed");
+              status.textContent = "Copy failed. Select the command and copy it manually.";
+            }
+            resetTimer = setTimeout(() => {
+              button.classList.remove("is-copied", "is-failed");
+              button.setAttribute("aria-label", defaultLabel);
+              button.setAttribute("title", defaultTitle);
+            }, 2200);
+          });
+        }
+
+        addCopyHandler(
+          document.getElementById("copy-command"),
+          document.getElementById("install-command"),
+          document.getElementById("copy-status"),
+          "Install command copied to clipboard."
+        );
+        addCopyHandler(
+          document.getElementById("copy-log-command"),
+          document.getElementById("log-command"),
+          document.getElementById("copy-log-status"),
+          "Log command copied to clipboard."
+        );
       })();
     </script>
   </body>

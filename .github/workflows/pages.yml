@@ -32,6 +32,8 @@ jobs:
         run: |
           mkdir -p _site
           cp earnapp-setup.sh _site/earnapp-setup.sh
+          cp site/favicon.svg _site/favicon.svg
+          cp site/robots.txt _site/robots.txt
           sed "s|__REPOSITORY_URL__|${REPOSITORY_URL}|g" site/index.html > _site/index.html
 
       - name: Upload Pages artifact
