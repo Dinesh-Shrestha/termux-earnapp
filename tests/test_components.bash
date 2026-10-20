@@ -944,6 +944,7 @@ exit 0
 SH
 cat > "$WD_MD_I/nohup" <<SH
 #!/usr/bin/env bash
+printf 'PREFIX=%s\nSVDIR=%s\n' "\${PREFIX:-}" "\${SVDIR:-}" > "$WD_MP/nohup-env"
 : > "$WD_MP/nohup-real-invoked"
 exit 0
 SH
@@ -964,6 +965,8 @@ if [ "$rc" -eq 0 ] && [ "$wd_real" -eq 1 ]; then
 else
   fail=$((fail + 1)); printf 'FAIL  real-run watchdog launch (rc=%s nohup-invoked=%s)\n%s\n' "$rc" "$wd_real" "$out" >&2
 fi
+check "watchdog child receives PREFIX" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "PREFIX=$WD_MP"
+check "watchdog child receives an explicit SVDIR" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "SVDIR=$WD_MP/var/service"
 
 rm -rf "$WD_MP"
 

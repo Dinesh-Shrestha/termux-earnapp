@@ -504,7 +504,7 @@ setup_base() {
         if [ "$DRY_RUN" -eq 1 ]; then
           log INFO "[watchdog] sv-enable cloudflared"
         else
-          PREFIX="${PREFIX:-}" nohup sh -c "$WATCHDOG_LOOP" >/dev/null 2>&1 &
+          PREFIX="${PREFIX:-}" SVDIR="${PREFIX:-}/var/service" nohup sh -c "$WATCHDOG_LOOP" >/dev/null 2>&1 &
         fi
       fi
       step pkg upgrade \
