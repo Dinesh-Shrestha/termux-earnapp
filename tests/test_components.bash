@@ -1556,5 +1556,130 @@ else
   printf 'SKIP  helper POSIX check (dash not installed)\n'
 fi
 
+write_apt_config_stub() {
+  local dir=$1 mode=$2
+  mkdir -p "$dir"
+  cat > "$dir/apt-config" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\${APT_TEST_DIR:-/dev/null}/calls"
+case "$mode" in
+  ok) exit 0 ;;
+  fail-baseline) exit 1 ;;
+  fail-candidate)
+    case " \$* " in *" -c "*) exit 1 ;; esac
+    exit 0 ;;
+  fail-final)
+    case " \$* " in *" -c "*) exit 0 ;; esac
+    if [ -f "\${PREFIX:?}/etc/apt/apt.conf.d/earnapp-service-repair" ] &&
+       grep -q "DPkg::Pre-Invoke" "\$PREFIX/etc/apt/apt.conf.d/earnapp-service-repair"; then
+      exit 1
+    fi
+    exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/apt-config"
+}
+
+APT_T="$(mktemp -d)"
+REPAIR_CONF="$REPAIR_PREFIX/etc/apt/apt.conf.d/earnapp-service-repair"
+REPAIR_INSTALLED="$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh"
+_repair_saved_prefix=${PREFIX:-}
+_repair_saved_dry=$DRY_RUN
+PREFIX="$REPAIR_PREFIX"
+export PREFIX
+
+write_apt_config_stub "$APT_T" ok
+write_repair_prefix
+DRY_RUN=0
+APT_TEST_DIR="$APT_T"
+export APT_TEST_DIR
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "ensure exits 0 on a valid configuration" "0" "$rc"
+if [ -x "$REPAIR_INSTALLED" ]; then
+  pass=$((pass + 1)); printf 'PASS  ensure installs the executable helper\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure did not install the helper\n' >&2
+fi
+check_eq "ensure writes the absolute pre-hook" "yes" \
+  "$(grep -Fq "trap '' HUP; $REPAIR_INSTALLED snapshot || true" "$REPAIR_CONF" && echo yes)"
+check_eq "ensure writes the absolute post-hook" "yes" \
+  "$(grep -Fq "trap '' HUP; $REPAIR_INSTALLED repair || true" "$REPAIR_CONF" && echo yes)"
+check_eq "ensure validates the candidate with apt-config -c" "yes" \
+  "$(grep -Fq -- '-c ' "$APT_T/calls" && echo yes)"
+
+write_apt_config_stub "$APT_T" fail-baseline
+write_repair_prefix
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && [ ! -e "$REPAIR_INSTALLED" ] && [ ! -e "$REPAIR_CONF" ]; then
+  pass=$((pass + 1)); printf 'PASS  baseline parse failure modifies nothing\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  baseline failure wrote files (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+check "baseline failure is reported" "$out" "fails to parse"
+
+write_apt_config_stub "$APT_T" fail-candidate
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/apt/apt.conf.d"
+printf 'OLD\n' > "$REPAIR_CONF"
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "candidate failure keeps the active fragment" "OLD" "$(cat "$REPAIR_CONF")"
+check "candidate failure is reported" "$out" "rejected the staged"
+if [ -x "$REPAIR_INSTALLED" ]; then
+  pass=$((pass + 1)); printf 'PASS  helper is staged before fragment validation\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  helper missing after candidate failure\n' >&2
+fi
+
+write_apt_config_stub "$APT_T" fail-final
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/apt/apt.conf.d"
+printf 'OLD\n' > "$REPAIR_CONF"
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "final validation failure restores the previous fragment" "OLD" "$(cat "$REPAIR_CONF")"
+check "final validation failure is reported" "$out" "previous state restored"
+
+write_apt_config_stub "$APT_T" fail-final
+write_repair_prefix
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && [ ! -e "$REPAIR_CONF" ]; then
+  pass=$((pass + 1)); printf 'PASS  final validation failure removes a new fragment\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  new fragment survived final validation failure\n' >&2
+fi
+
+write_apt_config_stub "$APT_T" ok
+write_repair_prefix
+PATH="$APT_T:/usr/bin:/bin" ensure_service_repair >/dev/null 2>&1
+out=$(PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && case "$out" in *"[write]"*) false ;; *) true ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  ensure is idempotent\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure rewrote identical files (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+
+write_repair_prefix
+DRY_RUN=1
+out=$(PATH="$REPAIR_ROOT/none:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "ensure dry run exits 0 without apt-config" "0" "$rc"
+check "ensure dry run logs the baseline" "$out" "[run] apt-config dump"
+check "ensure dry run logs the helper write" "$out" "[write] $REPAIR_INSTALLED"
+check "ensure dry run logs the fragment write" "$out" "[write] $REPAIR_CONF"
+if [ ! -e "$REPAIR_INSTALLED" ] && [ ! -e "$REPAIR_CONF" ]; then
+  pass=$((pass + 1)); printf 'PASS  ensure dry run writes nothing\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure dry run wrote files\n' >&2
+fi
+
+DRY_RUN=0
+write_repair_prefix
+out=$(PATH="$REPAIR_ROOT/none" ensure_service_repair 2>&1); rc=$?
+check_eq "ensure fails without apt-config" "1" "$rc"
+check "missing apt-config is reported" "$out" "apt-config not found"
+
+PREFIX="$_repair_saved_prefix"
+DRY_RUN="$_repair_saved_dry"
+unset APT_TEST_DIR
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

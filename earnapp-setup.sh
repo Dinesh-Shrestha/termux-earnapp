@@ -439,6 +439,53 @@ write_service_repair_helper() {
   mv -f "$tmp" "$target" || { rm -f "$tmp"; die "failed to install $target"; }
 }
 
+ensure_service_repair() {
+  local helper="${PREFIX:-}/var/lib/earnapp-setup/service-repair.sh"
+  local conf_dir="${PREFIX:-}/etc/apt/apt.conf.d"
+  local conf="$conf_dir/earnapp-service-repair"
+  local stage="${PREFIX:-}/etc/apt"
+  local candidate="$stage/earnapp-service-repair.candidate"
+  local backup="$stage/earnapp-service-repair.prev"
+  local pre post desired
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[run] apt-config dump"
+    write_service_repair_helper
+    log INFO "[write] $conf"
+    return 0
+  fi
+  command -v apt-config >/dev/null 2>&1 ||
+    die "apt-config not found; cannot validate the APT service-repair hooks"
+  apt-config dump >/dev/null 2>&1 ||
+    die "existing APT configuration fails to parse; not modifying it"
+  write_service_repair_helper
+  pre="DPkg::Pre-Invoke { \"trap '' HUP; $helper snapshot || true\"; };"
+  post="DPkg::Post-Invoke { \"trap '' HUP; $helper repair || true\"; };"
+  desired=$(printf '%s\n%s\n' "$pre" "$post")
+  if [ -f "$conf" ] && [ "$(cat "$conf")" = "$desired" ]; then
+    log INFO "APT service-repair hooks already configured"
+    return 0
+  fi
+  mkdir -p "$conf_dir" || die "failed to create $conf_dir"
+  rm -f "$candidate"
+  printf '%s\n%s\n' "$pre" "$post" > "$candidate" || die "failed to stage $candidate"
+  apt-config -c "$candidate" dump >/dev/null 2>&1 || {
+    rm -f "$candidate"
+    die "apt-config rejected the staged service-repair fragment"
+  }
+  if [ -f "$conf" ]; then
+    cp -f "$conf" "$backup" || die "failed to back up $conf"
+  else
+    rm -f "$backup"
+  fi
+  mv -f "$candidate" "$conf" || die "failed to activate $conf"
+  if ! apt-config dump >/dev/null 2>&1; then
+    if [ -f "$backup" ]; then mv -f "$backup" "$conf"; else rm -f "$conf"; fi
+    die "APT configuration failed validation after installing the service-repair hooks; previous state restored"
+  fi
+  rm -f "$backup"
+  log INFO "APT service-repair hooks installed"
+}
+
 setup_base() {
   if list_contains base "${REQUESTED[@]}"; then
     log INFO "Base: updating package lists and upgrading packages"
