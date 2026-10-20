@@ -267,6 +267,178 @@ else
   printf "no cloudflared outage in %ss\n" "$((i * step))" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
 fi'
 
+SERVICE_REPAIR_HOOK='#!/data/data/com.termux/files/usr/bin/sh
+trap "" HUP 2>/dev/null || :
+case "$0" in
+  */var/lib/earnapp-setup/service-repair.sh) derived_prefix=${0%/var/lib/earnapp-setup/service-repair.sh} ;;
+  *) derived_prefix="" ;;
+esac
+PREFIX=${PREFIX:-$derived_prefix}
+[ -n "$PREFIX" ] || exit 0
+PATH="$PREFIX/bin:$PATH"
+export PATH
+SVDIR="$PREFIX/var/service"
+export SVDIR
+state_dir="$PREFIX/var/lib/earnapp-setup"
+pending="$state_dir/pending-services"
+log_file="$PREFIX/var/log/service-repair.log"
+
+log_line() {
+  phase=$1
+  shift
+  if [ -f "$log_file" ] && [ "$(wc -l < "$log_file")" -gt 1000 ]; then
+    tail -n 500 "$log_file" > "$log_file.tmp.$$" && mv -f "$log_file.tmp.$$" "$log_file"
+  fi
+  printf "%s [%s] %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" "$*" >> "$log_file" 2>/dev/null
+}
+
+is_name() {
+  case "$1" in
+    ""|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$1" in
+    [A-Za-z0-9]*) return 0 ;;
+  esac
+  return 1
+}
+
+write_pending() {
+  if [ -z "$1" ]; then
+    rm -f "$pending"
+    return 0
+  fi
+  tmp="$pending.tmp.$$"
+  printf "%s\n" "$1" > "$tmp" 2>/dev/null || return 0
+  mv -f "$tmp" "$pending" 2>/dev/null || rm -f "$tmp"
+}
+
+snapshot() {
+  enabled=""
+  for d in "$SVDIR"/*; do
+    [ -d "$d" ] || continue
+    name=${d##*/}
+    is_name "$name" || continue
+    [ -f "$d/down" ] && continue
+    if [ -z "$enabled" ]; then enabled="$name"; else enabled="$enabled
+$name"; fi
+  done
+  old=""
+  [ -f "$pending" ] && old=$(cat "$pending")
+  merged=""
+  count=0
+  for name in $old $enabled; do
+    [ -n "$name" ] || continue
+    is_name "$name" || continue
+    case "
+$merged
+" in *"
+$name
+"*) continue ;; esac
+    if [ -z "$merged" ]; then merged="$name"; else merged="$merged
+$name"; fi
+    count=$((count + 1))
+  done
+  current=""
+  [ -f "$pending" ] && current=$(cat "$pending")
+  [ "$merged" = "$current" ] || write_pending "$merged"
+  log_line pre "snapshot $count enabled"
+}
+
+repair() {
+  phase=$1
+  [ -f "$pending" ] || return 0
+  if [ ! -d "$SVDIR" ]; then
+    log_line "$phase" "pending kept (SVDIR missing)"
+    return 0
+  fi
+  keep=""
+  while IFS= read -r name || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    is_name "$name" || continue
+    d="$SVDIR/$name"
+    if [ ! -d "$d" ]; then
+      log_line "$phase" "dropped $name (service directory missing)"
+      continue
+    fi
+    [ -f "$d/down" ] || continue
+    if command -v sv-enable >/dev/null 2>&1; then
+      sv-enable "$name" >/dev/null 2>&1 || :
+    else
+      rm -f "$d/down" 2>/dev/null || :
+      sv up "$name" >/dev/null 2>&1 || :
+    fi
+    if [ -f "$d/down" ]; then
+      if [ -z "$keep" ]; then keep="$name"; else keep="$keep
+$name"; fi
+      log_line "$phase" "retained $name (down still present)"
+    else
+      log_line "$phase" "repaired $name (down reappeared)"
+    fi
+  done < "$pending"
+  current=""
+  [ -f "$pending" ] && current=$(cat "$pending")
+  [ "$keep" = "$current" ] || write_pending "$keep"
+}
+
+boot() {
+  [ -f "$pending" ] || return 0
+  repair boot
+}
+
+status() {
+  printf "pending: "
+  if [ -f "$pending" ]; then
+    while IFS= read -r name || [ -n "$name" ]; do
+      [ -n "$name" ] && printf "%s " "$name"
+    done < "$pending"
+  fi
+  printf "\n"
+  if [ -f "$pending" ]; then
+    while IFS= read -r name || [ -n "$name" ]; do
+      [ -n "$name" ] || continue
+      if [ ! -d "$SVDIR/$name" ]; then
+        printf "service %s: missing\n" "$name"
+      elif [ -f "$SVDIR/$name/down" ]; then
+        printf "service %s: disabled (down present)\n" "$name"
+      else
+        printf "service %s: enabled\n" "$name"
+      fi
+      if command -v sv >/dev/null 2>&1; then
+        sv status "$name" 2>/dev/null
+      fi
+    done < "$pending"
+  fi
+  printf "log:\n"
+  tail -n 20 "$log_file" 2>/dev/null
+}
+
+case "${1:-}" in
+  snapshot) snapshot ;;
+  repair) repair post ;;
+  boot) boot ;;
+  status) status ;;
+  *) : ;;
+esac
+exit 0'
+
+write_service_repair_helper() {
+  local dir="${PREFIX:-}/var/lib/earnapp-setup"
+  local target="$dir/service-repair.sh"
+  local tmp="$target.tmp.$$"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[write] $target"
+    return 0
+  fi
+  mkdir -p "$dir" "${PREFIX:-}/var/log" || die "failed to create service-repair state directories"
+  if [ -f "$target" ] && [ "$(cat "$target")" = "$SERVICE_REPAIR_HOOK" ]; then
+    return 0
+  fi
+  printf '%s\n' "$SERVICE_REPAIR_HOOK" > "$tmp" || die "failed to write $tmp"
+  sh -n "$tmp" || { rm -f "$tmp"; die "service-repair helper failed the POSIX shell syntax check"; }
+  chmod +x "$tmp" || { rm -f "$tmp"; die "failed to set the service-repair helper executable"; }
+  mv -f "$tmp" "$target" || { rm -f "$tmp"; die "failed to install $target"; }
+}
+
 setup_base() {
   if list_contains base "${REQUESTED[@]}"; then
     log INFO "Base: updating package lists and upgrading packages"
