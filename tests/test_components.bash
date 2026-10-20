@@ -1807,6 +1807,27 @@ check_eq "migration preserves the original first line" \
 check_eq "migration exits 0" "0" "$rc"
 
 reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/profile.d"
+printf ':\n' > "$REPAIR_PREFIX/etc/profile.d/start-services.sh"
+_repair_home="$(mktemp -d)"
+mkdir -p "$_repair_home/.termux/boot"
+_repair_script="$_repair_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"' > "$_repair_script"
+chmod +x "$_repair_script"
+_repair_boot_stub="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_repair_boot_stub/sv-enable"
+chmod +x "$_repair_boot_stub/sv-enable"
+write_apt_config_stub "$_repair_boot_stub" ok
+out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+check_eq "migration keeps a complete start-services line without a trailing newline" "1" \
+  "$(grep -cxF '. "$PREFIX/etc/profile.d/start-services.sh"' "$_repair_script")"
+check_eq "migration appends the repair line once without a trailing newline" "1" \
+  "$(grep -cxF '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true' "$_repair_script")"
+check_eq "migration without a trailing newline exits 0" "0" "$rc"
+
+reset_state
 DRY_RUN=1
 write_repair_prefix
 _repair_home="$(mktemp -d)"

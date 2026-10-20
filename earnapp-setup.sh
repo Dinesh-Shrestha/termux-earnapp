@@ -567,6 +567,9 @@ setup_boot() {
     if [ "$DRY_RUN" -eq 1 ]; then
       log INFO "[append] $script"
     else
+      if [ -s "$script" ] && [ -n "$(tail -c 1 "$script")" ]; then
+        printf '\n' >> "$script" || die "failed to append service repair to $script"
+      fi
       printf '%s\n' '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true' >> "$script" \
         || die "failed to append service repair to $script"
     fi
