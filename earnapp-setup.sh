@@ -487,6 +487,7 @@ ensure_service_repair() {
 }
 
 setup_base() {
+  ensure_service_repair
   if list_contains base "${REQUESTED[@]}"; then
     log INFO "Base: updating package lists and upgrading packages"
     step pkg update -y || die "pkg update failed"
@@ -536,6 +537,7 @@ write_start_services() {
 
 termux-wake-lock
 . "$PREFIX/etc/profile.d/start-services.sh"
+/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true
 EOF
 }
 
@@ -554,10 +556,20 @@ setup_boot() {
   local script created=0
   log INFO "Boot: ensuring termux-services and configuring Termux:Boot"
   ensure_pkg sv-enable termux-services
+  ensure_service_repair
   start_termux_services
+  step sh "${PREFIX:-}/var/lib/earnapp-setup/service-repair.sh" repair || true
   script=$(boot_script)
   if [ -f "$script" ] && boot_script_configured "$script"; then
     log INFO "Termux:Boot start-services script already configured"
+  elif [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
+       && ! grep -Fq 'service-repair.sh boot' "$script"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log INFO "[append] $script"
+    else
+      printf '%s\n' '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true' >> "$script" \
+        || die "failed to append service repair to $script"
+    fi
   elif [ -f "$script" ] && [ "$DRY_RUN" -eq 0 ]; then
     if [ "$FLAG_YES" -eq 0 ] && ask_yn "start-services already exists. Replace it?" n; then
       write_start_services
@@ -579,7 +591,8 @@ setup_boot() {
 
 boot_script_configured() {
   local script=${1:-$(boot_script)}
-  [ -f "$script" ] && grep -Fq 'start-services.sh' "$script"
+  [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
+    && grep -Fq 'service-repair.sh boot' "$script"
 }
 
 setup_sshd() {

@@ -269,5 +269,16 @@ _wd_o=$( { is_termux() { return 0; }
 rm -rf "$MOCKDIR37" "$_wd_h"
 t_eq "menu exits after a successful option" "1" "$(printf '%s\n' "$_wd_o" | grep -c 'Select an option')"
 
+reset_state
+DRY_RUN=1
+MOCKDIR38="$(mktemp -d)"
+_wd_h="$(mktemp -d)"
+_wd_o=$(HOME="$_wd_h" PREFIX="$_wd_h/prefix" PATH="$MOCKDIR38:/usr/bin:/bin" menu_run base 2>&1)
+_apt_i=$(printf '%s\n' "$_wd_o" | grep -n '\[run\] apt-config dump' | head -n 1 | cut -d: -f1)
+_upd_i=$(printf '%s\n' "$_wd_o" | grep -n 'pkg update -y' | head -n 1 | cut -d: -f1)
+t_eq "base dispatch installs repair hooks before package work" "yes" \
+  "$([ -n "$_apt_i" ] && [ -n "$_upd_i" ] && [ "$_apt_i" -lt "$_upd_i" ] && echo yes)"
+rm -rf "$MOCKDIR38" "$_wd_h"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -64,7 +64,8 @@ cat > "$_wd_prefix_services/etc/profile.d/start-services.sh" <<'SH'
 printf 'started\n' >> "$TERMUX_SERVICES_TEST_MARKER"
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICES/sv-enable"
-chmod +x "$MOCKDIR_SERVICES/sv-enable"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICES/apt-config"
+chmod +x "$MOCKDIR_SERVICES/sv-enable" "$MOCKDIR_SERVICES/apt-config"
 TERMUX_SERVICES_TEST_MARKER="$_wd_prefix_services/started" \
   DRY_RUN=0 PREFIX="$_wd_prefix_services" HOME="$_wd_home_services" \
   PATH="$MOCKDIR_SERVICES:/usr/bin:/bin" setup_boot >/dev/null 2>&1
@@ -148,7 +149,7 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR4="$(mktemp -d)"
 for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR4/$tool"
@@ -435,7 +436,7 @@ reset_state
 MOCKDIR3="$(mktemp -d)"
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR3/$tool"
   chmod +x "$MOCKDIR3/$tool"
@@ -924,7 +925,7 @@ fi
 reset_state
 DRY_RUN=0
 REQUESTED=(base)
-unset PREFIX
+PREFIX="$WD_MP"
 WD_MD_I="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WD_MD_I/pkg"
 cat > "$WD_MD_I/apt" <<'SH'
@@ -946,7 +947,8 @@ cat > "$WD_MD_I/nohup" <<SH
 : > "$WD_MP/nohup-real-invoked"
 exit 0
 SH
-chmod +x "$WD_MD_I/pkg" "$WD_MD_I/apt" "$WD_MD_I/sv" "$WD_MD_I/nohup"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WD_MD_I/apt-config"
+chmod +x "$WD_MD_I/pkg" "$WD_MD_I/apt" "$WD_MD_I/sv" "$WD_MD_I/nohup" "$WD_MD_I/apt-config"
 rm -f "$WD_MP/nohup-real-invoked"
 out=$(PATH="$WD_MD_I:$PATH" setup_base 2>&1); rc=$?
 wd_w=0
@@ -1163,7 +1165,7 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR17="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR17/sv-enable"
 chmod +x "$MOCKDIR17/sv-enable"
@@ -1680,6 +1682,180 @@ check "missing apt-config is reported" "$out" "apt-config not found"
 PREFIX="$_repair_saved_prefix"
 DRY_RUN="$_repair_saved_dry"
 unset APT_TEST_DIR
+
+reset_state
+DRY_RUN=1
+REQUESTED=(base)
+PKG_UPGRADABLE=1
+_repair_saved_prefix=${PREFIX:-}
+_repair_saved_dry=$DRY_RUN
+PREFIX="$REPAIR_PREFIX"
+out=$(PATH="$REPAIR_STUB:/usr/bin:/bin" setup_base 2>&1); rc=$?
+_apt_i=$(printf '%s\n' "$out" | grep -n '\[run\] apt-config dump' | head -n 1 | cut -d: -f1)
+_upd_i=$(printf '%s\n' "$out" | grep -n 'pkg update -y' | head -n 1 | cut -d: -f1)
+check_eq "base validates repair hooks before pkg update" "yes" \
+  "$([ -n "$_apt_i" ] && [ -n "$_upd_i" ] && [ "$_apt_i" -lt "$_upd_i" ] && echo yes)"
+check_eq "base dry run still exits 0" "0" "$rc"
+unset PKG_UPGRADABLE
+
+reset_state
+DRY_RUN=0
+REQUESTED=(base)
+write_repair_prefix
+_repair_order="$(mktemp -d)"
+cat > "$_repair_order/pkg" <<'SH'
+#!/usr/bin/env bash
+[ -f "${PREFIX:?}/etc/apt/apt.conf.d/earnapp-service-repair" ] && printf 'conf-present\n' >> "$ORDER_DIR/calls"
+printf 'pkg %s\n' "$*" >> "$ORDER_DIR/calls"
+exit 0
+SH
+chmod +x "$_repair_order/pkg"
+write_apt_config_stub "$_repair_order" ok
+PREFIX="$REPAIR_PREFIX"
+ORDER_DIR="$_repair_order"
+export PREFIX ORDER_DIR
+PATH="$_repair_order:/usr/bin:/bin" setup_base >/dev/null 2>&1; rc=$?
+check_eq "base installs the hooks before invoking pkg" "conf-present" \
+  "$(head -n 1 "$_repair_order/calls" 2>/dev/null)"
+check_eq "base real run exits 0 with a valid configuration" "0" "$rc"
+
+reset_state
+DRY_RUN=1
+write_repair_prefix
+_repair_home="$(mktemp -d)"
+_repair_empty="$(mktemp -d)"
+out=$(HOME="$_repair_home" PREFIX="$REPAIR_PREFIX" PATH="$_repair_empty:/usr/bin:/bin" setup_boot 2>&1); rc=$?
+_pkg_i=$(printf '%s\n' "$out" | grep -n 'pkg install termux-services -y' | head -n 1 | cut -d: -f1)
+_apt_i=$(printf '%s\n' "$out" | grep -n '\[run\] apt-config dump' | head -n 1 | cut -d: -f1)
+_src_i=$(printf '%s\n' "$out" | grep -n '\[source\].*start-services.sh' | head -n 1 | cut -d: -f1)
+_rep_i=$(printf '%s\n' "$out" | grep -n '\[run\] sh .*service-repair.sh repair' | head -n 1 | cut -d: -f1)
+_wr_i=$(printf '%s\n' "$out" | grep -n '\[write\].*start-services' | head -n 1 | cut -d: -f1)
+check_eq "boot installs hooks after termux-services and repairs after the supervisor" "yes" \
+  "$([ -n "$_pkg_i" ] && [ -n "$_apt_i" ] && [ -n "$_src_i" ] && [ -n "$_rep_i" ] && [ -n "$_wr_i" ] \
+     && [ "$_pkg_i" -lt "$_apt_i" ] && [ "$_apt_i" -lt "$_src_i" ] \
+     && [ "$_src_i" -lt "$_rep_i" ] && [ "$_rep_i" -lt "$_wr_i" ] && echo yes)"
+check_eq "boot dry run exits 0" "0" "$rc"
+
+reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/var/service/sshd" "$REPAIR_PREFIX/etc/profile.d"
+: > "$REPAIR_PREFIX/var/service/sshd/down"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+_repair_marker="$REPAIR_PREFIX/supervisor.started"
+cat > "$REPAIR_PREFIX/etc/profile.d/start-services.sh" <<SH
+printf 'started\n' > "$_repair_marker"
+SH
+_repair_boot_stub="$(mktemp -d)"
+cat > "$_repair_boot_stub/sv-enable" <<SH
+#!/usr/bin/env bash
+if [ -f "$_repair_marker" ]; then
+  printf 'after-supervisor %s\n' "\$1" >> "$_repair_boot_stub/calls"
+else
+  printf 'before-supervisor %s\n' "\$1" >> "$_repair_boot_stub/calls"
+fi
+rm -f "\${SVDIR:?}/\$1/down"
+exit 0
+SH
+chmod +x "$_repair_boot_stub/sv-enable"
+write_apt_config_stub "$_repair_boot_stub" ok
+_repair_home="$(mktemp -d)"
+PREFIX="$REPAIR_PREFIX"
+export PREFIX
+out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+check_eq "boot repairs pending state after starting the supervisor" "after-supervisor sshd" \
+  "$(cat "$_repair_boot_stub/calls" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
+  pass=$((pass + 1)); printf 'PASS  boot clears repaired pending state\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  boot pending repair (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+
+write_repair_prefix
+_repair_one="$(mktemp)"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_repair_one"
+boot_script_configured "$_repair_one"; rc=$?
+check_eq "one-marker boot script is not configured" "1" "$rc"
+printf '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' >> "$_repair_one"
+boot_script_configured "$_repair_one"; rc=$?
+check_eq "two-marker boot script is configured" "0" "$rc"
+
+reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/profile.d"
+printf ':\n' > "$REPAIR_PREFIX/etc/profile.d/start-services.sh"
+_repair_home="$(mktemp -d)"
+mkdir -p "$_repair_home/.termux/boot"
+_repair_script="$_repair_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_repair_script"
+chmod +x "$_repair_script"
+_repair_boot_stub="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_repair_boot_stub/sv-enable"
+chmod +x "$_repair_boot_stub/sv-enable"
+write_apt_config_stub "$_repair_boot_stub" ok
+out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+check_eq "migration appends the repair line once" "1" \
+  "$(grep -c 'service-repair.sh boot' "$_repair_script")"
+check_eq "migration keeps the start-services line" "1" \
+  "$(grep -c 'start-services.sh' "$_repair_script")"
+check_eq "migration preserves the original first line" \
+  '. "$PREFIX/etc/profile.d/start-services.sh"' "$(head -n 1 "$_repair_script")"
+check_eq "migration exits 0" "0" "$rc"
+
+reset_state
+DRY_RUN=1
+write_repair_prefix
+_repair_home="$(mktemp -d)"
+mkdir -p "$_repair_home/.termux/boot"
+_repair_script="$_repair_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_repair_script"
+out=$(HOME="$_repair_home" PATH="$_repair_empty:/usr/bin:/bin" setup_boot 2>&1); rc=$?
+check "boot dry run logs the append" "$out" "[append] $_repair_script"
+check_eq "boot dry run leaves the old script unchanged" \
+  '. "$PREFIX/etc/profile.d/start-services.sh"' "$(cat "$_repair_script")"
+check_eq "boot append dry run exits 0" "0" "$rc"
+
+reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/profile.d"
+printf ':\n' > "$REPAIR_PREFIX/etc/profile.d/start-services.sh"
+_repair_home="$(mktemp -d)"
+mkdir -p "$_repair_home/.termux/boot"
+_repair_script="$_repair_home/.termux/boot/start-services"
+printf '#!/bin/sh\nprintf custom\n' > "$_repair_script"
+chmod +x "$_repair_script"
+_repair_hash_before=$(cksum < "$_repair_script")
+out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+check "custom boot script keeps the replace prompt path" "$out" "Keeping existing"
+check_eq "custom boot script is unchanged" "$_repair_hash_before" "$(cksum < "$_repair_script")"
+
+reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/profile.d"
+printf ':\n' > "$REPAIR_PREFIX/etc/profile.d/start-services.sh"
+_repair_home="$(mktemp -d)"
+out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+_repair_script="$_repair_home/.termux/boot/start-services"
+check_eq "absent boot script gets the repair line" "1" \
+  "$(grep -c 'service-repair.sh boot' "$_repair_script" 2>/dev/null)"
+_src_i=$(grep -n 'start-services.sh' "$_repair_script" | head -n 1 | cut -d: -f1)
+_rep_i=$(grep -n 'service-repair.sh boot' "$_repair_script" | head -n 1 | cut -d: -f1)
+check_eq "boot script sources services before repairing" "yes" \
+  "$([ -n "$_src_i" ] && [ -n "$_rep_i" ] && [ "$_src_i" -lt "$_rep_i" ] && echo yes)"
+check_eq "boot write exits 0" "0" "$rc"
+
+reset_state
+DRY_RUN=1
+REQUESTED=(base)
+_repair_empty="$(mktemp -d)"
+( set -u; unset PREFIX; PATH="$_repair_empty:/usr/bin:/bin" setup_base ) >/dev/null 2>&1; rc=$?
+check_eq "base dry run works with PREFIX unset under set -u" "0" "$rc"
+
+PREFIX="$_repair_saved_prefix"
+DRY_RUN="$_repair_saved_dry"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
