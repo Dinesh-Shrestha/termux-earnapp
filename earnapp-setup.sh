@@ -151,7 +151,7 @@ _add_deps() {
 comp_tool_present() {
   case "$1" in
     base)         return 0 ;;
-    boot)         command -v sv-enable >/dev/null 2>&1 && boot_script_configured "$(boot_script)" ;;
+    boot)         command -v sv-enable >/dev/null 2>&1 ;;
     sshd)         command -v sshd >/dev/null 2>&1 ;;
     cloudflared)  command -v cloudflared >/dev/null 2>&1 ;;
     udocker|earnapp) command -v udocker >/dev/null 2>&1 ;;
@@ -175,6 +175,15 @@ svc_dir() {
 service_up() {
   local name=$1
   sv status "$name" 2>/dev/null | grep -q "run: $name: (pid"
+}
+
+stop_watchdogs() {
+  local pid
+  for pid in "$@"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || :
+    wait "$pid" 2>/dev/null || :
+  done
 }
 
 ensure_pkg() {
@@ -228,33 +237,35 @@ boot_script() {
   printf '%s/.termux/boot/start-services\n' "$HOME"
 }
 
-WATCHDOG_LOOP='step=${WATCHDOG_STEP:-2}
+WATCHDOG_LOOP='svc=${WATCHDOG_SERVICE:-cloudflared}
+step=${WATCHDOG_STEP:-2}
 acted=0
 downs=0
 i=0
-printf "armed at +0s\n" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
+wlog="${PREFIX}/tmp/${svc}-watchdog.log"
+printf "armed at +0s\n" >> "$wlog"
 while [ "$i" -lt "${WATCHDOG_WAIT:-600}" ]; do
-  st=$(sv status cloudflared 2>/dev/null)
+  st=$(sv status "$svc" 2>/dev/null)
   case "$st" in
-    *"run: cloudflared: (pid"*)
+    *"run: $svc: (pid"*)
       downs=0
       if [ "$acted" -eq 1 ]; then
-        if [ -f "${PREFIX}/var/service/cloudflared/down" ]; then
-          sv-enable cloudflared 2>/dev/null
+        if [ -f "${PREFIX}/var/service/$svc/down" ]; then
+          sv-enable "$svc" 2>/dev/null
         else
-          printf "recovered at +%ss\n" "$((i * step))" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
+          printf "recovered at +%ss\n" "$((i * step))" >> "$wlog"
           exit 0
         fi
       fi
       ;;
-    *"down: cloudflared:"*)
+    *"down: $svc:"*)
       downs=$((downs + 1))
       if [ "$downs" -ge 2 ]; then
         acted=1
         if [ "$downs" -eq 2 ]; then
-          printf "cloudflared down at +%ss\n" "$((i * step))" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
+          printf "%s down at +%ss\n" "$svc" "$((i * step))" >> "$wlog"
         fi
-        sv-enable cloudflared 2>/dev/null
+        sv-enable "$svc" 2>/dev/null
       fi
       ;;
   esac
@@ -262,9 +273,9 @@ while [ "$i" -lt "${WATCHDOG_WAIT:-600}" ]; do
   sleep "$step"
 done
 if [ "$acted" -eq 1 ]; then
-  printf "gave up after %ss\n" "$((i * step))" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
+  printf "gave up after %ss\n" "$((i * step))" >> "$wlog"
 else
-  printf "no cloudflared outage in %ss\n" "$((i * step))" >> "${PREFIX}/tmp/cloudflared-watchdog.log"
+  printf "no %s outage in %ss\n" "$svc" "$((i * step))" >> "$wlog"
 fi'
 
 SERVICE_REPAIR_HOOK='#!/data/data/com.termux/files/usr/bin/sh
@@ -492,25 +503,38 @@ setup_base() {
     log INFO "Base: updating package lists and upgrading packages"
     step pkg update -y || die "pkg update failed"
     if pkg_upgraded; then
-      local cfd_up=0
-      if service_up cloudflared; then
+      local name watch="" stable="" pids=""
+      for name in sshd cloudflared; do
+        if service_up "$name"; then
+          watch="$watch $name"
+        fi
+      done
+      if [ -n "$watch" ]; then
         sleep 1
-        if service_up cloudflared; then
-          cfd_up=1
-        fi
+        for name in $watch; do
+          if service_up "$name"; then
+            stable="$stable $name"
+          fi
+        done
+        watch=$stable
       fi
-      if [ "$cfd_up" -eq 1 ]; then
-        log INFO "[watchdog] arm cloudflared upgrade recovery"
+      for name in $watch; do
+        log INFO "[watchdog] arm $name upgrade recovery"
         if [ "$DRY_RUN" -eq 1 ]; then
-          log INFO "[watchdog] sv-enable cloudflared"
+          log INFO "[watchdog] sv-enable $name"
         else
-          PREFIX="${PREFIX:-}" SVDIR="${PREFIX:-}/var/service" nohup sh -c "$WATCHDOG_LOOP" >/dev/null 2>&1 &
+          PREFIX="${PREFIX:-}" SVDIR="${PREFIX:-}/var/service" WATCHDOG_SERVICE="$name" nohup sh -c "$WATCHDOG_LOOP" >/dev/null 2>&1 &
+          pids="$pids $!"
         fi
-      fi
-      step pkg upgrade \
+      done
+      if ! step pkg upgrade \
         -o 'Dpkg::Options::=--force-confdef' \
         -o 'Dpkg::Options::=--force-confold' \
-        -y || die "pkg upgrade failed"
+        -y; then
+        stop_watchdogs $pids
+        die "pkg upgrade failed"
+      fi
+      stop_watchdogs $pids
     else
       log INFO "No upgradable packages; skipping pkg upgrade"
     fi

@@ -183,6 +183,26 @@ fi
 
 reset_state
 DRY_RUN=1
+REQUESTED=(boot)
+resolve_request boot >/dev/null
+_wd_boot_home="$(mktemp -d)"
+mkdir -p "$_wd_boot_home/.termux/boot"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n' > "$_wd_boot_home/.termux/boot/start-services"
+_wd_boot_mock="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_wd_boot_mock/sv-enable"
+chmod +x "$_wd_boot_mock/sv-enable"
+out=$(HOME="$_wd_boot_home" PATH="$_wd_boot_mock:$PATH" setup_base 2>&1); rc=$?
+rm -rf "$_wd_boot_home" "$_wd_boot_mock"
+if [ "$rc" -eq 0 ] \
+   && case "$out" in *"required tools already present; skipping pkg update/upgrade"*) true ;; *) false ;; esac \
+   && ! case "$out" in *"[run] pkg update"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  base auto skips package work when boot script only needs repair line\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  base auto boot repair-line readiness (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+
+reset_state
+DRY_RUN=1
 REQUESTED=(earnapp)
 _wd_savedpath=$PATH
 MOCKDIR31="$(mktemp -d)"
@@ -568,6 +588,91 @@ reset_state
 DRY_RUN=1
 REQUESTED=(base)
 PKG_UPGRADABLE=1
+MOCKDIR_SSHD="$(mktemp -d)"
+cat > "$MOCKDIR_SSHD/sv" <<'SH'
+#!/usr/bin/env bash
+name="$2"
+case "$1" in
+  status) printf 'run: %s: (pid 18196) 2297s\n' "$name" ;;
+esac
+exit 0
+SH
+chmod +x "$MOCKDIR_SSHD/sv"
+out=$(PATH="$MOCKDIR_SSHD:$PATH" setup_base 2>&1); rc=$?
+rm -rf "$MOCKDIR_SSHD"
+unset PKG_UPGRADABLE
+if [ "$rc" -eq 0 ] \
+    && case "$out" in *"[watchdog] arm sshd upgrade recovery"*) true ;; *) false ;; esac \
+    && case "$out" in *"[watchdog] sv-enable sshd"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  base arms sshd watchdog when up\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  base sshd watchdog arm (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+
+reset_state
+DRY_RUN=0
+REQUESTED=(base)
+_wd_stop_prefix="$(mktemp -d)"
+_wd_stop_mock="$(mktemp -d)"
+_wd_stop_pids="$_wd_stop_mock/pids"
+cat > "$_wd_stop_mock/pkg" <<'SH'
+#!/usr/bin/env bash
+case "$*" in *upgrade*) sleep 0.3 ;; esac
+exit 0
+SH
+cat > "$_wd_stop_mock/apt" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "list" ] && [ "$2" = "--upgradable" ]; then
+  printf 'cloudflared/stable 2026.9.0 aarch64 [upgradable from: 2026.8.0]\n'
+fi
+exit 0
+SH
+cat > "$_wd_stop_mock/sv" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  status) printf 'run: %s: (pid 18196) 2297s\n' "$2" ;;
+esac
+exit 0
+SH
+cat > "$_wd_stop_mock/nohup" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "${WATCHDOG_PID_FILE:?}"
+exec sleep 30
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_wd_stop_mock/apt-config"
+chmod +x "$_wd_stop_mock/pkg" "$_wd_stop_mock/apt" "$_wd_stop_mock/sv" \
+  "$_wd_stop_mock/nohup" "$_wd_stop_mock/apt-config"
+out=$(PREFIX="$_wd_stop_prefix" WATCHDOG_PID_FILE="$_wd_stop_pids" \
+      PATH="$_wd_stop_mock:/usr/bin:/bin" setup_base 2>&1); rc=$?
+_wd_stop_wait=0
+while [ "$_wd_stop_wait" -lt 50 ] \
+  && [ "$(wc -l < "$_wd_stop_pids" 2>/dev/null || printf 0)" -lt 2 ]; do
+  sleep 0.1
+  _wd_stop_wait=$((_wd_stop_wait + 1))
+done
+_wd_stop_count=$(wc -l < "$_wd_stop_pids" 2>/dev/null || printf 0)
+_wd_stop_alive=0
+if [ -f "$_wd_stop_pids" ]; then
+  while IFS= read -r _wd_stop_pid; do
+    [ -n "$_wd_stop_pid" ] || continue
+    if kill -0 "$_wd_stop_pid" 2>/dev/null; then
+      _wd_stop_alive=$((_wd_stop_alive + 1))
+    fi
+    kill "$_wd_stop_pid" 2>/dev/null || :
+  done < "$_wd_stop_pids"
+fi
+rm -rf "$_wd_stop_prefix" "$_wd_stop_mock"
+if [ "$rc" -eq 0 ] && [ "$_wd_stop_count" -ge 2 ] && [ "$_wd_stop_alive" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'PASS  base stops watchdogs after pkg upgrade returns\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  base watchdog cleanup (rc=%s launched=%s alive=%s)\n%s\n' \
+    "$rc" "$_wd_stop_count" "$_wd_stop_alive" "$out" >&2
+fi
+
+reset_state
+DRY_RUN=1
+REQUESTED=(base)
+PKG_UPGRADABLE=1
 MOCKDIR8="$(mktemp -d)"
 cat > "$MOCKDIR8/sv" <<'SH'
 #!/usr/bin/env bash
@@ -582,10 +687,36 @@ out=$(PATH="$MOCKDIR8:$PATH" setup_base 2>&1); rc=$?
 rm -rf "$MOCKDIR8"
 unset PKG_UPGRADABLE
 if [ "$rc" -eq 0 ] \
-   && ! case "$out" in *"[watchdog] arm cloudflared upgrade recovery"*) true ;; *) false ;; esac; then
+   && ! case "$out" in *"[watchdog] arm cloudflared upgrade recovery"*) true ;; *) false ;; esac \
+   && ! case "$out" in *"[watchdog] arm sshd upgrade recovery"*) true ;; *) false ;; esac; then
   pass=$((pass + 1)); printf 'PASS  base does not arm watchdog when down\n'
 else
   fail=$((fail + 1)); printf 'FAIL  base no-arm when down (rc=%s)\n%s\n' "$rc" "$out" >&2
+fi
+
+reset_state
+DRY_RUN=1
+REQUESTED=(base)
+PKG_UPGRADABLE=1
+MOCKDIR_MIXED="$(mktemp -d)"
+cat > "$MOCKDIR_MIXED/sv" <<'SH'
+#!/usr/bin/env bash
+case "$1:$2" in
+  status:sshd) printf 'down: sshd: 1s, normally down\n' ;;
+  status:cloudflared) printf 'run: cloudflared: (pid 18196) 2297s\n' ;;
+esac
+exit 0
+SH
+chmod +x "$MOCKDIR_MIXED/sv"
+out=$(PATH="$MOCKDIR_MIXED:$PATH" setup_base 2>&1); rc=$?
+rm -rf "$MOCKDIR_MIXED"
+unset PKG_UPGRADABLE
+if [ "$rc" -eq 0 ] \
+   && case "$out" in *"[watchdog] arm cloudflared upgrade recovery"*) true ;; *) false ;; esac \
+   && ! case "$out" in *"[watchdog] arm sshd upgrade recovery"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  base arms only services that were up\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  base mixed service arm (rc=%s)\n%s\n' "$rc" "$out" >&2
 fi
 
 reset_state
@@ -673,6 +804,27 @@ if [ "$rc" -eq 0 ] \
   pass=$((pass + 1)); printf 'PASS  watchdog recovers only after down transition and exits 0\n'
 else
   fail=$((fail + 1)); printf 'FAIL  watchdog recover-after-down (rc=%s first_poll=%s)\ncalls=%s\nlog=%s\n' "$rc" "$wfirst_poll" "$wcalls" "$wlog" >&2
+fi
+
+reset_state
+WD_MP_SSHD="$(mktemp -d)"
+mkdir -p "$WD_MP_SSHD/var/service/sshd" "$WD_MP_SSHD/tmp"
+WD_MD_G="$(mktemp -d)"
+write_sv_mock "$WD_MD_G" '4|5'
+write_sv_enable_mock "$WD_MD_G" "$WD_MP_SSHD/var/service/sshd" ''
+write_sleep_mock "$WD_MD_G"
+out=$(PREFIX="$WD_MP_SSHD" WATCHDOG_SERVICE=sshd WATCHDOG_TEST_DIR="$WD_MD_G" WATCHDOG_STEP=0 WATCHDOG_WAIT=40 \
+      PATH="$WD_MD_G:$PATH" sh -c "$WATCHDOG_LOOP" 2>&1); rc=$?
+wlog=$(cat "$WD_MP_SSHD/tmp/sshd-watchdog.log" 2>/dev/null)
+wcalls=$(cat "$WD_MD_G/calls" 2>/dev/null)
+rm -rf "$WD_MD_G" "$WD_MP_SSHD"
+if [ "$rc" -eq 0 ] \
+   && [ -n "$wcalls" ] \
+   && case "$wlog" in *recovered*) true ;; *) false ;; esac \
+   && case "$wlog" in *"sshd down at"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  watchdog watches the requested service (sshd)\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  watchdog requested service (rc=%s)\ncalls=%s\nlog=%s\n' "$rc" "$wcalls" "$wlog" >&2
 fi
 
 reset_state
@@ -944,13 +1096,14 @@ exit 0
 SH
 cat > "$WD_MD_I/nohup" <<SH
 #!/usr/bin/env bash
-printf 'PREFIX=%s\nSVDIR=%s\n' "\${PREFIX:-}" "\${SVDIR:-}" > "$WD_MP/nohup-env"
+printf 'PREFIX=%s\nSVDIR=%s\nWATCHDOG_SERVICE=%s\n' \
+  "\${PREFIX:-}" "\${SVDIR:-}" "\${WATCHDOG_SERVICE:-}" >> "$WD_MP/nohup-env"
 : > "$WD_MP/nohup-real-invoked"
 exit 0
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WD_MD_I/apt-config"
 chmod +x "$WD_MD_I/pkg" "$WD_MD_I/apt" "$WD_MD_I/sv" "$WD_MD_I/nohup" "$WD_MD_I/apt-config"
-rm -f "$WD_MP/nohup-real-invoked"
+rm -f "$WD_MP/nohup-env" "$WD_MP/nohup-real-invoked"
 out=$(PATH="$WD_MD_I:$PATH" setup_base 2>&1); rc=$?
 wd_w=0
 while [ "$wd_w" -lt 20 ] && [ ! -e "$WD_MP/nohup-real-invoked" ]; do
@@ -967,6 +1120,8 @@ else
 fi
 check "watchdog child receives PREFIX" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "PREFIX=$WD_MP"
 check "watchdog child receives an explicit SVDIR" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "SVDIR=$WD_MP/var/service"
+check "watchdog child receives sshd service" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "WATCHDOG_SERVICE=sshd"
+check "watchdog child receives cloudflared service" "$(cat "$WD_MP/nohup-env" 2>/dev/null)" "WATCHDOG_SERVICE=cloudflared"
 
 rm -rf "$WD_MP"
 
@@ -1158,10 +1313,10 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR16/sv-enable"
 chmod +x "$MOCKDIR16/sv-enable"
 ( HOME="$_wd_home" PATH="$MOCKDIR16" comp_tool_present boot ); rc=$?
 rm -rf "$MOCKDIR16" "$_wd_home"
-if [ "$rc" -eq 1 ]; then
-  pass=$((pass + 1)); printf 'PASS  comp_tool_present boot false without boot script\n'
+if [ "$rc" -eq 0 ]; then
+  pass=$((pass + 1)); printf 'PASS  comp_tool_present boot true without boot script\n'
 else
-  fail=$((fail + 1)); printf 'FAIL  comp_tool_present boot missing script (rc=%s)\n' "$rc" >&2
+  fail=$((fail + 1)); printf 'FAIL  comp_tool_present boot requires only sv-enable (rc=%s)\n' "$rc" >&2
 fi
 
 reset_state
