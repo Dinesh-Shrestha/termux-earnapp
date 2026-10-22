@@ -588,9 +588,8 @@ setup_boot() {
     log INFO "Termux:Boot start-services script already configured"
   elif [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
        && ! grep -Fq 'service-repair.sh boot' "$script"; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      log INFO "[append] $script"
-    else
+    log INFO "[append] $script"
+    if [ "$DRY_RUN" -eq 0 ]; then
       if [ -s "$script" ] && [ -n "$(tail -c 1 "$script")" ]; then
         printf '\n' >> "$script" || die "failed to append service repair to $script"
       fi

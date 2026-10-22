@@ -1953,6 +1953,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$_repair_boot_stub/sv-enable"
 chmod +x "$_repair_boot_stub/sv-enable"
 write_apt_config_stub "$_repair_boot_stub" ok
 out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
+check "migration logs the real append" "$out" "[append] $_repair_script"
 check_eq "migration appends the repair line once" "1" \
   "$(grep -c 'service-repair.sh boot' "$_repair_script")"
 check_eq "migration keeps the start-services line" "1" \
