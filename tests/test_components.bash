@@ -1403,6 +1403,36 @@ fi
 
 reset_state
 DRY_RUN=1
+_wd_saved_prefix=${PREFIX:-}
+_wd_ssh_prefix="$(mktemp -d)"
+mkdir -p "$_wd_ssh_prefix/etc/ssh" "$_wd_ssh_prefix/var/service/sshd"
+printf 'Port 2222\n' > "$_wd_ssh_prefix/etc/ssh/sshd_config"
+MOCKDIR_SSHINFO="$(mktemp -d)"
+cat > "$MOCKDIR_SSHINFO/sv" <<'SH'
+#!/usr/bin/env bash
+printf 'run: %s: (pid 1234) 5s\n' "$2"
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SSHINFO/sshd"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SSHINFO/sv-enable"
+printf '#!/usr/bin/env bash\nprintf "tester\\n"\n' > "$MOCKDIR_SSHINFO/whoami"
+cat > "$MOCKDIR_SSHINFO/ip" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-4 -o addr show dev wlan0")
+    printf '3: wlan0    inet 192.168.1.42/24 brd 192.168.1.255 scope global wlan0\n'
+    ;;
+esac
+SH
+chmod +x "$MOCKDIR_SSHINFO/sv" "$MOCKDIR_SSHINFO/sshd" \
+  "$MOCKDIR_SSHINFO/sv-enable" "$MOCKDIR_SSHINFO/whoami" "$MOCKDIR_SSHINFO/ip"
+out=$(PREFIX="$_wd_ssh_prefix" PATH="$MOCKDIR_SSHINFO:$PATH" setup_sshd 2>&1); rc=$?
+PREFIX="$_wd_saved_prefix"
+rm -rf "$MOCKDIR_SSHINFO" "$_wd_ssh_prefix"
+check "sshd prints a copyable connection command" "$out" \
+  "SSH command: ssh -p 2222 tester@192.168.1.42" "$rc"
+
+reset_state
+DRY_RUN=1
 _wd_home2="$(mktemp -d)"
 MOCKDIR26="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR26/sv-enable"

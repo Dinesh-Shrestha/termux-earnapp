@@ -621,6 +621,62 @@ boot_script_configured() {
     && grep -Fq 'service-repair.sh boot' "$script"
 }
 
+sshd_port() {
+  local config="${PREFIX:-}/etc/ssh/sshd_config" port=""
+  if [ -f "$config" ]; then
+    port=$(awk 'tolower($1)=="port" { print $2; exit }' "$config" 2>/dev/null)
+  fi
+  case "$port" in
+    ""|*[!0-9]*) port=8022 ;;
+    *) [ "$port" -ge 1 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null || port=8022 ;;
+  esac
+  printf '%s\n' "$port"
+}
+
+parse_ifconfig_ipv4() {
+  awk -v wanted="${1:-}" '
+    wanted != "" && $1 == wanted ":" { in_wanted = 1; next }
+    wanted != "" && in_wanted && /^[^[:space:]]/ { in_wanted = 0 }
+    /inet / && (wanted == "" || in_wanted) {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "inet") {
+          value = $(i + 1)
+          sub(/^addr:/, "", value)
+          print value
+          exit
+        }
+      }
+    }'
+}
+
+local_ipv4() {
+  local ip="" ip_cmd
+  ip_cmd=$(command -v ip 2>/dev/null || true)
+  if [ -n "$ip_cmd" ]; then
+    ip=$("$ip_cmd" -4 -o addr show dev wlan0 2>/dev/null \
+      | awk '$3 == "inet" { sub(/\/.*/, "", $4); print $4; exit }')
+    if [ -z "$ip" ]; then
+      ip=$("$ip_cmd" -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+    fi
+  fi
+  if [ -z "$ip" ] && command -v ifconfig >/dev/null 2>&1; then
+    ip=$(ifconfig wlan0 2>/dev/null | parse_ifconfig_ipv4)
+    [ -n "$ip" ] || ip=$(ifconfig 2>/dev/null | parse_ifconfig_ipv4 wlan0)
+  fi
+  if [ -z "$ip" ] && command -v getprop >/dev/null 2>&1; then
+    ip=$(getprop dhcp.wlan0.ipaddress 2>/dev/null)
+  fi
+  case "$ip" in
+    ""|127.*|0.0.0.0|255.*) ip=localhost ;;
+  esac
+  printf '%s\n' "$ip"
+}
+
+ssh_target() {
+  printf '%s@%s\n' "$(whoami 2>/dev/null)" "$(local_ipv4)"
+}
+
 setup_sshd() {
   log INFO "SSH: ensuring openssh and a supervised sshd service"
   ensure_pkg sshd openssh
@@ -633,7 +689,7 @@ setup_sshd() {
       log INFO "SSH password unchanged"
     fi
   fi
-  log INFO "Current username: $(whoami 2>/dev/null)@$(hostname 2>/dev/null)"
+  log INFO "SSH command: ssh -p $(sshd_port) $(ssh_target)"
   step sv status sshd
   log INFO "SSH log: ${PREFIX:-}/var/log/sv/sshd/current"
 }
@@ -1111,7 +1167,7 @@ menu() {
   fi
   while :; do
     printf '\nEarnApp Termux Setup\n'
-    printf 'Architecture: %s   User: %s@%s\n' "$(detect_arch)" "$(whoami 2>/dev/null)" "$(hostname 2>/dev/null)"
+    printf 'Architecture: %s   User: %s\n' "$(detect_arch)" "$(ssh_target)"
     printf '%s\n' '-------------------------------------------'
     printf ' 1) Base system update/upgrade\n'
     printf ' 2) Termux:Boot + termux-services\n'

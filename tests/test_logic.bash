@@ -78,6 +78,108 @@ t_eq "parse_image_platform real line" "linux/arm64" \
 t_eq "parse_image_platform no match" "" \
   "$(parse_image_platform 'linux/arm64        . busybox:latest')"
 
+_prefix_port="$(mktemp -d)"
+mkdir -p "$_prefix_port/etc/ssh"
+printf 'Port 2222\n' > "$_prefix_port/etc/ssh/sshd_config"
+t_eq "sshd_port reads configured port" "2222" \
+  "$(PREFIX="$_prefix_port" sshd_port)"
+printf '#Port 22\nPort 2200\nPort 2201\n' > "$_prefix_port/etc/ssh/sshd_config"
+t_eq "sshd_port uses the first configured port" "2200" \
+  "$(PREFIX="$_prefix_port" sshd_port)"
+printf 'Port nope\n' > "$_prefix_port/etc/ssh/sshd_config"
+t_eq "sshd_port defaults on invalid config" "8022" \
+  "$(PREFIX="$_prefix_port" sshd_port)"
+rm -rf "$_prefix_port"
+
+_prefix_empty="$(mktemp -d)"
+t_eq "sshd_port defaults without config" "8022" \
+  "$(PREFIX="$_prefix_empty" sshd_port)"
+rm -rf "$_prefix_empty"
+
+_mock_ip="$(mktemp -d)"
+cat > "$_mock_ip/ip" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-4 -o addr show dev wlan0")
+    printf '3: wlan0    inet 192.168.1.42/24 brd 192.168.1.255 scope global wlan0\n'
+    ;;
+esac
+SH
+chmod +x "$_mock_ip/ip"
+t_eq "local_ipv4 uses wlan0 address" "192.168.1.42" \
+  "$(PATH="$_mock_ip:$PATH" local_ipv4)"
+rm -rf "$_mock_ip"
+
+_mock_route="$(mktemp -d)"
+cat > "$_mock_route/ip" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-4 -o addr show dev wlan0") ;;
+  "-4 route get 1.1.1.1")
+    printf '1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.43 uid 0\n'
+    ;;
+esac
+SH
+chmod +x "$_mock_route/ip"
+t_eq "local_ipv4 falls back to the route source" "192.168.1.43" \
+  "$(PATH="$_mock_route:$PATH" local_ipv4)"
+rm -rf "$_mock_route"
+
+t_eq "parse_ifconfig_ipv4 accepts net-tools output" "192.168.1.44" \
+  "$(printf 'wlan0: flags=4163<UP>\n        inet addr:192.168.1.44  Bcast:192.168.1.255  Mask:255.255.255.0\n' | parse_ifconfig_ipv4)"
+t_eq "parse_ifconfig_ipv4 accepts toybox output" "192.168.1.46" \
+  "$(printf 'wlan0   Link encap:Ethernet\n          inet 192.168.1.46  netmask 255.255.255.0\n' | parse_ifconfig_ipv4)"
+t_eq "parse_ifconfig_ipv4 selects a named interface" "192.168.1.65" \
+  "$(printf 'lo: flags=73<UP>\n        inet 127.0.0.1  netmask 255.0.0.0\nrmnet5: flags=4305<UP>\n        inet 10.33.77.62  netmask 255.255.255.0\nwlan0: flags=4163<UP>\n        inet 192.168.1.65  netmask 255.255.255.0\n' | parse_ifconfig_ipv4 wlan0)"
+
+_mock_ifconfig="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$_mock_ifconfig/ip"
+cat > "$_mock_ifconfig/ifconfig" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -gt 0 ]; then
+  exit 1
+fi
+cat <<'OUT'
+lo: flags=73<UP>
+        inet 127.0.0.1  netmask 255.0.0.0
+rmnet5: flags=4305<UP>
+        inet 10.33.77.62  netmask 255.255.255.0
+wlan0: flags=4163<UP>
+        inet 192.168.1.65  netmask 255.255.255.0
+OUT
+SH
+chmod +x "$_mock_ifconfig/ip" "$_mock_ifconfig/ifconfig"
+t_eq "local_ipv4 falls back to full ifconfig" "192.168.1.65" \
+  "$(PATH="$_mock_ifconfig:$PATH" local_ipv4)"
+rm -rf "$_mock_ifconfig"
+
+_mock_getprop="$(mktemp -d)"
+printf '#!/bin/sh\nprintf "192.168.1.45\\n"\n' > "$_mock_getprop/getprop"
+chmod +x "$_mock_getprop/getprop"
+t_eq "local_ipv4 falls back to getprop" "192.168.1.45" \
+  "$(PATH="$_mock_getprop" local_ipv4)"
+rm -rf "$_mock_getprop"
+
+_mock_none="$(mktemp -d)"
+t_eq "local_ipv4 falls back to localhost" "localhost" \
+  "$(PATH="$_mock_none" local_ipv4)"
+rm -rf "$_mock_none"
+
+_mock_target="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nprintf "tester\\n"\n' > "$_mock_target/whoami"
+cat > "$_mock_target/ip" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-4 -o addr show dev wlan0")
+    printf '3: wlan0    inet 192.168.1.42/24 brd 192.168.1.255 scope global wlan0\n'
+    ;;
+esac
+SH
+chmod +x "$_mock_target/whoami" "$_mock_target/ip"
+t_eq "ssh_target combines user and local address" "tester@192.168.1.42" \
+  "$(PATH="$_mock_target:$PATH" ssh_target)"
+rm -rf "$_mock_target"
+
 plan_one() {
   resolve_request "$@" | tr '\n' ' ' | sed 's/ $//'
 }
