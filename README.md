@@ -34,8 +34,14 @@ See [the logging guide](docs/earnapp-logs.md) for details.
 
 Restarting EarnApp with `sv restart earnapp`, `sv down earnapp`, or
 `sv up earnapp` only signals EarnApp's own process tree. Other services running
-under udocker keep running. Re-run the EarnApp setup after upgrading this script
-so an existing service picks up the scoped cleanup files.
+under udocker keep running. Cleanup refuses `runsv`/`runsvdir`, pid 1, and its
+own ancestors, so a stale pid file cannot take down the supervisor.
+
+The setup starts the termux-services supervisor itself instead of sourcing the
+profile hook. Sourcing it runs `service-daemon start` even when a supervisor is
+already running, and the duplicate's short-lived `runsv` children fight the
+originals over `supervise/`. Re-run the EarnApp setup after upgrading this
+script so an existing service picks up the scoped cleanup files.
 
 ## Source
 
