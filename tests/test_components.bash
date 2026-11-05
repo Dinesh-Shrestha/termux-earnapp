@@ -409,17 +409,42 @@ if [ "$_scope_old_kill" -eq 0 ]; then
   kill -TERM "$_scope_foreign" 2>/dev/null || true
   wait "$_scope_foreign" 2>/dev/null || true
 
+  # finish reads the snapshot one pid per line, so control/t must record it
+  # that way too; a space-separated line makes finish refuse the whole list.
+  _scope_state_file="$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+  _scope_recorded_count=$(grep -c . "$_scope_state_file" 2>/dev/null || true)
+  _scope_expected_count=0
+  for _scope_child in $_scope_children; do
+    _scope_expected_count=$((_scope_expected_count + 1))
+  done
+  if [ -n "$_scope_children" ] \
+     && [ "$_scope_recorded_count" = "$_scope_expected_count" ] \
+     && ! grep -q ' ' "$_scope_state_file" 2>/dev/null; then
+    pass=$((pass + 1)); printf 'PASS  control/t records one EarnApp child pid per line\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  control/t snapshot is not one pid per line (expected=%s recorded=%s)\n' \
+      "$_scope_expected_count" "$_scope_recorded_count" >&2
+  fi
+
   sleep 60 &
   _scope_finish_pid=$!
-  printf '%s\n' "$_scope_finish_pid" > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+  sleep 60 &
+  _scope_finish_pid2=$!
+  printf '%s\n%s\n' "$_scope_finish_pid" "$_scope_finish_pid2" \
+    > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
   sleep 60 &
   _scope_finish_foreign=$!
   PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
   _scope_finish_state=$(ps -o stat= -p "$_scope_finish_pid" 2>/dev/null | tr -d ' ')
+  _scope_finish_state2=$(ps -o stat= -p "$_scope_finish_pid2" 2>/dev/null | tr -d ' ')
   if case "$_scope_finish_state" in
        ""|Z*) true ;;
        *) false ;;
      esac \
+     && case "$_scope_finish_state2" in
+          ""|Z*) true ;;
+          *) false ;;
+        esac \
      && kill -0 "$_scope_finish_foreign" 2>/dev/null \
      && [ ! -e "$_scope_prefix/var/lib/earnapp-setup/earnapp.children" ]; then
     pass=$((pass + 1)); printf 'PASS  finish reaps only the recorded EarnApp children\n'
@@ -427,12 +452,14 @@ if [ "$_scope_old_kill" -eq 0 ]; then
     fail=$((fail + 1)); printf 'FAIL  finish missed its child, hit an unrelated process, or kept the snapshot\n' >&2
   fi
   wait "$_scope_finish_pid" 2>/dev/null || true
+  wait "$_scope_finish_pid2" 2>/dev/null || true
   kill -TERM "$_scope_finish_foreign" 2>/dev/null || true
   wait "$_scope_finish_foreign" 2>/dev/null || true
 
   # A stale or recycled supervise/pid must never let cleanup signal a
-  # supervisor. The guard refuses the pid, signals nothing, and exits 0 so
-  # runsv sends its own TERM to the process it forked (never to itself).
+  # supervisor. The guard refuses the pid and signals nothing; its non-zero
+  # exit lets runsv send its own TERM to the process it forked (never to
+  # itself).
   #
   # comm cannot be faked by copying a binary: coreutils is a multi-call
   # executable that refuses to run under an unknown name, so the copy would be
@@ -448,10 +475,10 @@ if [ "$_scope_old_kill" -eq 0 ]; then
     printf '%s\n' "$_guard_pid" > "$_scope_svc/supervise/pid"
     PREFIX="$_scope_prefix" sh "$_scope_ctl/t" >/dev/null 2>&1
     _guard_rc=$?
-    if kill -0 "$_guard_pid" 2>/dev/null && [ "$_guard_rc" -eq 0 ]; then
+    if kill -0 "$_guard_pid" 2>/dev/null && [ "$_guard_rc" -ne 0 ]; then
       pass=$((pass + 1)); printf 'PASS  control/t refuses to signal a supervisor pid\n'
     else
-      fail=$((fail + 1)); printf 'FAIL  control/t signalled a supervisor pid or failed the control request\n' >&2
+      fail=$((fail + 1)); printf 'FAIL  control/t signalled a supervisor pid or did not defer to runsv\n' >&2
     fi
     printf '%s\n' "$_guard_pid" > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
     PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
@@ -479,6 +506,25 @@ if ! grep -qF '. "$hook"' "$SCRIPT_DIR/../earnapp-setup.sh" \
 else
   fail=$((fail + 1)); printf 'FAIL  setup still sources the termux-services profile hook\n' >&2
 fi
+
+# Later service operations still need SVDIR/LOGDIR when the supervisor is
+# already running, so the exports cannot sit behind that early return.
+reset_state
+DRY_RUN=0
+_wd_prefix="$(mktemp -d)"
+(
+  PREFIX="$_wd_prefix"
+  unset SVDIR LOGDIR
+  supervisor_running() { return 0; }
+  start_termux_services >/dev/null 2>&1
+  printf '%s\n' "${SVDIR:-}" > "$_wd_prefix/svdir.out"
+  printf '%s\n' "${LOGDIR:-}" > "$_wd_prefix/logdir.out"
+)
+check_eq "start_termux_services exports SVDIR before the early return" \
+  "$_wd_prefix/var/service" "$(cat "$_wd_prefix/svdir.out")"
+check_eq "start_termux_services exports LOGDIR before the early return" \
+  "$_wd_prefix/var/log" "$(cat "$_wd_prefix/logdir.out")"
+rm -rf "$_wd_prefix"
 
 # Re-running the installer with the same UUID must refresh old service files.
 # Otherwise a patched script leaves the legacy broad-kill cleanup in place.
@@ -1400,7 +1446,11 @@ MOCKDIR_SERVICE_WAIT="$(mktemp -d)"
 cat > "$MOCKDIR_SERVICE_WAIT/sv" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = status ]; then
-  printf 'down: %s: 1s, normally down\n' "$2"
+  if [ -e "$TERMUX_SERVICE_PREFIX/var/service/$2/supervise/ok" ]; then
+    printf 'run: %s: (pid 1234) 1s\n' "$2"
+  else
+    printf 'down: %s: 1s, normally down\n' "$2"
+  fi
 elif [ "$1" = up ]; then
   printf 'up\n' >> "$TERMUX_SERVICE_CALLS"
   [ -e "$TERMUX_SERVICE_PREFIX/var/service/$2/supervise/ok" ]
@@ -1435,6 +1485,39 @@ if [ "$rc" -eq 0 ] && [ "$_wd_started" -eq 1 ] \
   pass=$((pass + 1)); printf 'PASS  ensure_service waits for supervision and starts once via sv-enable\n'
 else
   fail=$((fail + 1)); printf 'FAIL  ensure_service waits for supervision and starts once (rc=%s started=%s sv-up-calls=%s)\n%s\n' "$rc" "$_wd_started" "$_wd_up_calls" "$out" >&2
+fi
+
+# A service that never reports run must fail loudly and show its recent log,
+# otherwise setup prints "All done" while the service is down.
+reset_state
+DRY_RUN=0
+_wd_saved=${PREFIX:-}
+_wd_savedpath=$PATH
+_wd_prefix="$(mktemp -d)"
+mkdir -p "$_wd_prefix/var/service/earnapp/supervise" "$_wd_prefix/var/log/sv/earnapp"
+: > "$_wd_prefix/var/service/earnapp/supervise/ok"
+printf 'earnapp-startup-marker\n' > "$_wd_prefix/var/log/sv/earnapp/current"
+MOCKDIR_SERVICE_DOWN="$(mktemp -d)"
+cat > "$MOCKDIR_SERVICE_DOWN/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  printf 'down: %s: 96s, normally up\n' "$2"
+fi
+exit 0
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICE_DOWN/sv-enable"
+chmod +x "$MOCKDIR_SERVICE_DOWN/sv" "$MOCKDIR_SERVICE_DOWN/sv-enable"
+PREFIX="$_wd_prefix"
+out=$(PATH="$MOCKDIR_SERVICE_DOWN:$_wd_savedpath" ensure_service earnapp 2>&1); rc=$?
+PATH="$_wd_savedpath"
+rm -rf "$MOCKDIR_SERVICE_DOWN" "$_wd_prefix"
+PREFIX="$_wd_saved"
+if [ "$rc" -ne 0 ] \
+   && case "$out" in *"did not come up after sv-enable"*) true ;; *) false ;; esac \
+   && case "$out" in *"earnapp-startup-marker"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  ensure_service fails and shows the log when a service stays down\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure_service did not fail on a down service (rc=%s)\n%s\n' "$rc" "$out" >&2
 fi
 
 reset_state
@@ -1666,6 +1749,14 @@ out=$( ( PREFIX="$_wd_prefix"
 rm -rf "$MOCKDIR29" "$_wd_prefix"
 PREFIX="$_wd_saved"
 check "earnapp re-enables when a down file is present" "$out" "sv-enable earnapp" "$rc"
+
+# The status tail used to dump every matching process command line, which
+# leaked other services' credentials. Nothing should print that again.
+if ! grep -qF 'pgrep -af' "$SCRIPT_DIR/../earnapp-setup.sh"; then
+  pass=$((pass + 1)); printf 'PASS  earnapp status does not dump process command lines\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  earnapp status still dumps process command lines with pgrep -af\n' >&2
+fi
 
 REPAIR_ROOT="$(mktemp -d)"
 REPAIR_STUB="$REPAIR_ROOT/stub"

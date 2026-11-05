@@ -210,8 +210,19 @@ wait_for_service_supervision() {
   [ -e "$ready_file" ] || die "runit did not create the supervise endpoint for $name within 10 seconds: $ready_file"
 }
 
+wait_for_service_up() {
+  local name=$1 attempt=0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  while [ "$attempt" -lt 20 ]; do
+    service_up "$name" && return 0
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  service_up "$name"
+}
+
 ensure_service() {
-  local name=$1 down
+  local name=$1 down log_file
   SERVICE_JUST_STARTED=0
   if ! command -v sv-enable >/dev/null 2>&1; then
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -231,6 +242,15 @@ ensure_service() {
   wait_for_service_supervision "$name"
   step sv-enable "$name" || die "sv-enable $name failed"
   SERVICE_JUST_STARTED=1
+  if ! wait_for_service_up "$name"; then
+    log_file="${PREFIX:-}/var/log/sv/$name/current"
+    log ERROR "$name did not come up after sv-enable"
+    if [ -r "$log_file" ]; then
+      log ERROR "Recent $name log ($log_file):"
+      tail -n 20 "$log_file" >&2 || true
+    fi
+    die "$name failed to start; inspect $log_file"
+  fi
 }
 
 boot_script() {
@@ -571,6 +591,10 @@ supervisor_running() {
 
 start_termux_services() {
   local pidfile="${PREFIX:-}/var/run/service-daemon.pid" pid="" attempt=0
+  # Export the values the profile hook would have provided before any early
+  # return, so later service operations always have the expected layout.
+  export SVDIR="${PREFIX:-}/var/service"
+  export LOGDIR="${PREFIX:-}/var/log"
   if [ "$DRY_RUN" -eq 1 ]; then
     log INFO "[run] service-daemon start"
     return 0
@@ -594,9 +618,6 @@ start_termux_services() {
   log INFO "Starting the termux-services supervisor"
   # Do not source the profile hook: it starts a second daemon when the
   # manager already runs one, and it runs third-party shell code in-process.
-  # Export the values the hook would have provided instead.
-  export SVDIR="${PREFIX:-}/var/service"
-  export LOGDIR="${PREFIX:-}/var/log"
   if command -v service-daemon >/dev/null 2>&1; then
     nohup service-daemon start >/dev/null 2>&1 </dev/null &
   fi
@@ -1007,10 +1028,10 @@ refuse_pid() {
 pid=${1:-}
 [ -n "$pid" ] || pid=$(cat "$service_dir/supervise/pid" 2>/dev/null)
 if refuse_pid "$pid"; then
-  # No trustworthy target. Succeed without signalling anything: runsv then
-  # sends TERM/CONT to the service pid it forked, which is always the right
-  # process and never a supervisor.
-  exit 0
+  # No trustworthy target. Signal nothing ourselves. A non-zero exit tells
+  # runsv to send TERM to the service process it forked, which is always the
+  # right process and never a supervisor.
+  exit 1
 fi
 
 kids=""
@@ -1030,7 +1051,11 @@ if command -v pgrep >/dev/null 2>&1; then
 fi
 
 mkdir -p "${state_file%/*}" 2>/dev/null || true
-printf '%s\n' "$kids" > "$state_file" 2>/dev/null || true
+{
+  for p in $kids; do
+    printf '%s\n' "$p"
+  done
+} > "$state_file" 2>/dev/null || true
 for p in $kids; do
   kill -TERM "$p" 2>/dev/null || true
 done
@@ -1123,9 +1148,6 @@ setup_earnapp() {
   log INFO "Registration link: https://earnapp.com/r/$uuid"
   log INFO "EarnApp log: ${PREFIX:-}/var/log/sv/earnapp/current (follow with: tail -f \"\${PREFIX}/var/log/sv/earnapp/current\")"
   step sv status earnapp
-  if [ "$DRY_RUN" -eq 0 ]; then
-    pgrep -af 'earnapp|udocker|proot' 2>/dev/null || true
-  fi
 }
 
 run_component() {
