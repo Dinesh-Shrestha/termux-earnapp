@@ -60,17 +60,32 @@ _wd_prefix_services="$(mktemp -d)"
 _wd_home_services="$(mktemp -d)"
 MOCKDIR_SERVICES="$(mktemp -d)"
 mkdir -p "$_wd_prefix_services/etc/profile.d"
+# The setup must not source the profile hook. It starts the supervisor itself,
+# and only when nothing is running yet.
 cat > "$_wd_prefix_services/etc/profile.d/start-services.sh" <<'SH'
-printf 'started\n' >> "$TERMUX_SERVICES_TEST_MARKER"
+printf 'hook\n' >> "$TERMUX_SERVICES_TEST_MARKER.hook"
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICES/sv-enable"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_SERVICES/apt-config"
-chmod +x "$MOCKDIR_SERVICES/sv-enable" "$MOCKDIR_SERVICES/apt-config"
+cat > "$MOCKDIR_SERVICES/service-daemon" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' >> "$TERMUX_SERVICES_TEST_MARKER"
+exit 0
+SH
+# Report a supervisor only after service-daemon started one, so the setup has
+# to start it rather than assume it is already running.
+cat > "$MOCKDIR_SERVICES/pgrep" <<'SH'
+#!/usr/bin/env bash
+[ -s "$TERMUX_SERVICES_TEST_MARKER" ]
+SH
+chmod +x "$MOCKDIR_SERVICES/sv-enable" "$MOCKDIR_SERVICES/apt-config" \
+  "$MOCKDIR_SERVICES/service-daemon" "$MOCKDIR_SERVICES/pgrep"
 TERMUX_SERVICES_TEST_MARKER="$_wd_prefix_services/started" \
   DRY_RUN=0 PREFIX="$_wd_prefix_services" HOME="$_wd_home_services" \
   PATH="$MOCKDIR_SERVICES:/usr/bin:/bin" setup_boot >/dev/null 2>&1
 rc=$?
-if [ "$rc" -eq 0 ] && [ -s "$_wd_prefix_services/started" ]; then
+if [ "$rc" -eq 0 ] && [ -s "$_wd_prefix_services/started" ] \
+   && [ ! -e "$_wd_prefix_services/started.hook" ]; then
   pass=$((pass + 1)); printf 'PASS  boot starts termux-services in the current setup run\n'
 else
   fail=$((fail + 1)); printf 'FAIL  boot starts termux-services in the current setup run (exit %s)\n' "$rc" >&2
@@ -349,7 +364,10 @@ grep -qF 'pkill' "$_scope_ctl/t" "$_scope_svc/finish" 2>/dev/null && _scope_old_
 if [ "$_scope_old_kill" -eq 0 ] \
    && grep -qF 'supervise/pid' "$_scope_ctl/t" \
    && grep -qF 'earnapp.children' "$_scope_ctl/t" "$_scope_svc/finish" \
-   && grep -qF 'earnapp.children' "$_scope_svc/run"; then
+   && grep -qF 'earnapp.children' "$_scope_svc/run" \
+   && grep -qF 'pgrep -P' "$_scope_ctl/t" \
+   && ! grep -qF 'ps -A -o pid' "$_scope_ctl/t" \
+   && grep -qF 'runsv|runsvdir' "$_scope_ctl/t" "$_scope_svc/finish"; then
   pass=$((pass + 1)); printf 'PASS  service cleanup is scoped to the EarnApp process tree\n'
 else
   fail=$((fail + 1)); printf 'FAIL  service cleanup still contains a broad pkill or lacks scoped cleanup\n' >&2
@@ -411,10 +429,56 @@ if [ "$_scope_old_kill" -eq 0 ]; then
   wait "$_scope_finish_pid" 2>/dev/null || true
   kill -TERM "$_scope_finish_foreign" 2>/dev/null || true
   wait "$_scope_finish_foreign" 2>/dev/null || true
+
+  # A stale or recycled supervise/pid must never let cleanup signal a
+  # supervisor. The guard refuses the pid, signals nothing, and exits 0 so
+  # runsv sends its own TERM to the process it forked (never to itself).
+  #
+  # comm cannot be faked by copying a binary: coreutils is a multi-call
+  # executable that refuses to run under an unknown name, so the copy would be
+  # dead before the guard looked at it. Rename a live shell instead; it is
+  # /proc/<pid>/comm that the guard reads.
+  sh -c 'echo runsvdir > "/proc/$$/comm" 2>/dev/null; while :; do sleep 1; done' &
+  _guard_pid=$!
+  for _ in $(seq 1 50); do
+    [ "$(cat "/proc/$_guard_pid/comm" 2>/dev/null)" = "runsvdir" ] && break
+    sleep 0.1
+  done
+  if [ "$(cat "/proc/$_guard_pid/comm" 2>/dev/null)" = "runsvdir" ]; then
+    printf '%s\n' "$_guard_pid" > "$_scope_svc/supervise/pid"
+    PREFIX="$_scope_prefix" sh "$_scope_ctl/t" >/dev/null 2>&1
+    _guard_rc=$?
+    if kill -0 "$_guard_pid" 2>/dev/null && [ "$_guard_rc" -eq 0 ]; then
+      pass=$((pass + 1)); printf 'PASS  control/t refuses to signal a supervisor pid\n'
+    else
+      fail=$((fail + 1)); printf 'FAIL  control/t signalled a supervisor pid or failed the control request\n' >&2
+    fi
+    printf '%s\n' "$_guard_pid" > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+    PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
+    if kill -0 "$_guard_pid" 2>/dev/null; then
+      pass=$((pass + 1)); printf 'PASS  finish refuses to reap a supervisor pid\n'
+    else
+      fail=$((fail + 1)); printf 'FAIL  finish reaped a supervisor pid\n' >&2
+    fi
+  else
+    fail=$((fail + 2)); printf 'FAIL  supervisor guard behaviour not run: cannot stage a fake supervisor\n' >&2
+  fi
+  kill -TERM "$_guard_pid" 2>/dev/null || true
+  wait "$_guard_pid" 2>/dev/null || true
 else
   fail=$((fail + 2)); printf 'FAIL  scoped cleanup behaviour not run: broad pkill still present\n' >&2
 fi
 rm -rf "$_scope_prefix"
+
+# Sourcing the termux-services profile hook starts a second runsvdir when the
+# manager already runs one; the setup must start the supervisor itself and
+# only when no supervisor is running.
+if ! grep -qF '. "$hook"' "$SCRIPT_DIR/../earnapp-setup.sh" \
+   && grep -qF 'supervisor_running' "$SCRIPT_DIR/../earnapp-setup.sh"; then
+  pass=$((pass + 1)); printf 'PASS  setup starts the supervisor without sourcing the profile hook\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  setup still sources the termux-services profile hook\n' >&2
+fi
 
 # Re-running the installer with the same UUID must refresh old service files.
 # Otherwise a patched script leaves the legacy broad-kill cleanup in place.
@@ -2013,13 +2077,13 @@ _repair_empty="$(mktemp -d)"
 out=$(HOME="$_repair_home" PREFIX="$REPAIR_PREFIX" PATH="$_repair_empty:/usr/bin:/bin" setup_boot 2>&1); rc=$?
 _pkg_i=$(printf '%s\n' "$out" | grep -n 'pkg install termux-services -y' | head -n 1 | cut -d: -f1)
 _apt_i=$(printf '%s\n' "$out" | grep -n '\[run\] apt-config dump' | head -n 1 | cut -d: -f1)
-_src_i=$(printf '%s\n' "$out" | grep -n '\[source\].*start-services.sh' | head -n 1 | cut -d: -f1)
+_sup_i=$(printf '%s\n' "$out" | grep -n '\[run\] service-daemon start' | head -n 1 | cut -d: -f1)
 _rep_i=$(printf '%s\n' "$out" | grep -n '\[run\] sh .*service-repair.sh repair' | head -n 1 | cut -d: -f1)
 _wr_i=$(printf '%s\n' "$out" | grep -n '\[write\].*start-services' | head -n 1 | cut -d: -f1)
-check_eq "boot installs hooks after termux-services and repairs after the supervisor" "yes" \
-  "$([ -n "$_pkg_i" ] && [ -n "$_apt_i" ] && [ -n "$_src_i" ] && [ -n "$_rep_i" ] && [ -n "$_wr_i" ] \
-     && [ "$_pkg_i" -lt "$_apt_i" ] && [ "$_apt_i" -lt "$_src_i" ] \
-     && [ "$_src_i" -lt "$_rep_i" ] && [ "$_rep_i" -lt "$_wr_i" ] && echo yes)"
+check_eq "boot starts the supervisor then repairs before writing hooks" "yes" \
+  "$([ -n "$_pkg_i" ] && [ -n "$_apt_i" ] && [ -n "$_sup_i" ] && [ -n "$_rep_i" ] && [ -n "$_wr_i" ] \
+     && [ "$_pkg_i" -lt "$_apt_i" ] && [ "$_apt_i" -lt "$_sup_i" ] \
+     && [ "$_sup_i" -lt "$_rep_i" ] && [ "$_rep_i" -lt "$_wr_i" ] && echo yes)"
 check_eq "boot dry run exits 0" "0" "$rc"
 
 reset_state
@@ -2029,10 +2093,20 @@ mkdir -p "$REPAIR_PREFIX/var/service/sshd" "$REPAIR_PREFIX/etc/profile.d"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
 printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
 _repair_marker="$REPAIR_PREFIX/supervisor.started"
+_repair_hook_marker="$REPAIR_PREFIX/hook.sourced"
 cat > "$REPAIR_PREFIX/etc/profile.d/start-services.sh" <<SH
-printf 'started\n' > "$_repair_marker"
+printf 'sourced\n' > "$_repair_hook_marker"
 SH
 _repair_boot_stub="$(mktemp -d)"
+cat > "$_repair_boot_stub/service-daemon" <<SH
+#!/usr/bin/env bash
+printf 'started\n' > "$_repair_marker"
+exit 0
+SH
+cat > "$_repair_boot_stub/pgrep" <<SH
+#!/usr/bin/env bash
+[ -s "$_repair_marker" ]
+SH
 cat > "$_repair_boot_stub/sv-enable" <<SH
 #!/usr/bin/env bash
 if [ -f "$_repair_marker" ]; then
@@ -2043,7 +2117,8 @@ fi
 rm -f "\${SVDIR:?}/\$1/down"
 exit 0
 SH
-chmod +x "$_repair_boot_stub/sv-enable"
+chmod +x "$_repair_boot_stub/service-daemon" "$_repair_boot_stub/pgrep" \
+  "$_repair_boot_stub/sv-enable"
 write_apt_config_stub "$_repair_boot_stub" ok
 _repair_home="$(mktemp -d)"
 PREFIX="$REPAIR_PREFIX"
@@ -2051,6 +2126,8 @@ export PREFIX
 out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </dev/null 2>&1); rc=$?
 check_eq "boot repairs pending state after starting the supervisor" "after-supervisor sshd" \
   "$(cat "$_repair_boot_stub/calls" 2>/dev/null)"
+check_eq "boot starts the supervisor without sourcing the profile hook" "no" \
+  "$([ -e "$_repair_hook_marker" ] && echo yes || echo no)"
 if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
   pass=$((pass + 1)); printf 'PASS  boot clears repaired pending state\n'
 else

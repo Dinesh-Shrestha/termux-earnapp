@@ -565,15 +565,59 @@ termux-wake-lock
 EOF
 }
 
+supervisor_running() {
+  command -v pgrep >/dev/null 2>&1 && pgrep -x runsvdir >/dev/null 2>&1
+}
+
 start_termux_services() {
-  local hook="${PREFIX:-}/etc/profile.d/start-services.sh"
+  local pidfile="${PREFIX:-}/var/run/service-daemon.pid" pid="" attempt=0
   if [ "$DRY_RUN" -eq 1 ]; then
-    log INFO "[source] $hook"
+    log INFO "[run] service-daemon start"
     return 0
   fi
-  [ -r "$hook" ] || die "termux-services startup hook not found: $hook"
-  log INFO "Starting termux-services supervisor for this setup run"
-  . "$hook" || die "failed to start the termux-services supervisor"
+  if supervisor_running; then
+    log INFO "termux-services supervisor is already running"
+    return 0
+  fi
+  if [ -r "$pidfile" ]; then
+    read -r pid < "$pidfile" 2>/dev/null || pid=""
+    case "$pid" in
+      ''|*[!0-9]*) ;;
+      *)
+        if kill -0 "$pid" 2>/dev/null; then
+          log INFO "termux-services supervisor is already running"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  log INFO "Starting the termux-services supervisor"
+  # Do not source the profile hook: it starts a second daemon when the
+  # manager already runs one, and it runs third-party shell code in-process.
+  # Export the values the hook would have provided instead.
+  export SVDIR="${PREFIX:-}/var/service"
+  export LOGDIR="${PREFIX:-}/var/log"
+  if command -v service-daemon >/dev/null 2>&1; then
+    nohup service-daemon start >/dev/null 2>&1 </dev/null &
+  fi
+  while [ "$attempt" -lt 50 ]; do
+    supervisor_running && return 0
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  # A stale service-daemon.pid can make service-daemon start a no-op; fall
+  # back to runsvdir only when pgrep can confirm no supervisor is running.
+  if command -v runsvdir >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
+    nohup runsvdir -P "$SVDIR" >/dev/null 2>&1 </dev/null &
+    attempt=0
+    while [ "$attempt" -lt 50 ]; do
+      supervisor_running && return 0
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+  fi
+  log WARN "The termux-services supervisor did not report as running yet"
+  return 0
 }
 
 setup_boot() {
@@ -931,49 +975,110 @@ exec udocker run \\
 EOF
   cat > "$control/t" <<'EOF' || die "write $control/t failed"
 #!/data/data/com.termux/files/usr/bin/sh
-# Scoped cleanup: signal only this service's process tree. Never signal other
-# processes by name here; other container services share the same proot tree.
+# Scoped cleanup: signal only this service's process tree. Never signal a
+# supervisor, this script, one of its ancestors, or an unidentifiable pid:
+# other services share the same udocker/proot processes and the same runsvdir.
 PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
 service_dir="$PREFIX/var/service/earnapp"
 state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+
+parent_of() {
+  awk 'sub(/^[^)]*\) /, "") { print $2 }' "/proc/$1/stat" 2>/dev/null
+}
+
+refuse_pid() {
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$1" -gt 1 ] || return 0
+  [ "$1" = "$$" ] && return 0
+  [ -d "/proc/$1" ] || return 0
+  case "$(cat "/proc/$1/comm" 2>/dev/null)" in
+    runsv|runsvdir) return 0 ;;
+  esac
+  p=$$
+  while : ; do
+    p=$(parent_of "$p")
+    case "$p" in ''|*[!0-9]*) break ;; esac
+    [ "$p" -le 1 ] && break
+    [ "$p" = "$1" ] && return 0
+  done
+  return 1
+}
+
 pid=${1:-}
 [ -n "$pid" ] || pid=$(cat "$service_dir/supervise/pid" 2>/dev/null)
-if [ -n "$pid" ]; then
-  snapshot=$(ps -A -o pid=,ppid= 2>/dev/null)
-  [ -n "$snapshot" ] || snapshot=$(ps -eo pid=,ppid= 2>/dev/null)
-  kids=$(printf '%s\n' "$snapshot" | awk -v root="$pid" '
-    { parent[$1] = $2; kids[$2] = kids[$2] " " $1 }
-    END { walk(root) }
-    function walk(p,   n,a,i) {
-      n = split(kids[p], a, " ")
-      for (i = 1; i <= n; i++) { walk(a[i]); print a[i] }
-    }')
-  mkdir -p "${state_file%/*}" 2>/dev/null || true
-  printf '%s\n' "$kids" > "$state_file" 2>/dev/null || true
-  for p in $kids; do
-    kill -TERM "$p" 2>/dev/null || true
-  done
-  kill -TERM "$pid" 2>/dev/null || true
-  sleep 1
-  for p in $kids; do
-    kill -KILL "$p" 2>/dev/null || true
-  done
-  kill -KILL "$pid" 2>/dev/null || true
+if refuse_pid "$pid"; then
+  # No trustworthy target. Succeed without signalling anything: runsv then
+  # sends TERM/CONT to the service pid it forked, which is always the right
+  # process and never a supervisor.
+  exit 0
 fi
+
+kids=""
+queue=$pid
+if command -v pgrep >/dev/null 2>&1; then
+  while [ -n "$queue" ]; do
+    next=""
+    for p in $queue; do
+      for c in $(pgrep -P "$p" 2>/dev/null); do
+        refuse_pid "$c" && continue
+        kids="$kids $c"
+        next="$next $c"
+      done
+    done
+    queue=$next
+  done
+fi
+
+mkdir -p "${state_file%/*}" 2>/dev/null || true
+printf '%s\n' "$kids" > "$state_file" 2>/dev/null || true
+for p in $kids; do
+  kill -TERM "$p" 2>/dev/null || true
+done
+kill -TERM "$pid" 2>/dev/null || true
+sleep 1
+for p in $kids; do
+  kill -KILL "$p" 2>/dev/null || true
+done
+kill -KILL "$pid" 2>/dev/null || true
 exit 0
 EOF
   cat > "$dir/finish" <<'EOF' || die "write $dir/finish failed"
 #!/data/data/com.termux/files/usr/bin/sh
 PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
 state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+
+parent_of() {
+  awk 'sub(/^[^)]*\) /, "") { print $2 }' "/proc/$1/stat" 2>/dev/null
+}
+
+refuse_pid() {
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$1" -gt 1 ] || return 0
+  [ "$1" = "$$" ] && return 0
+  [ -d "/proc/$1" ] || return 0
+  case "$(cat "/proc/$1/comm" 2>/dev/null)" in
+    runsv|runsvdir) return 0 ;;
+  esac
+  p=$$
+  while : ; do
+    p=$(parent_of "$p")
+    case "$p" in ''|*[!0-9]*) break ;; esac
+    [ "$p" -le 1 ] && break
+    [ "$p" = "$1" ] && return 0
+  done
+  return 1
+}
+
 if [ -f "$state_file" ]; then
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
+    refuse_pid "$pid" && continue
     kill -TERM "$pid" 2>/dev/null || true
   done < "$state_file"
   sleep 1
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
+    refuse_pid "$pid" && continue
     kill -KILL "$pid" 2>/dev/null || true
   done < "$state_file"
   rm -f "$state_file"
