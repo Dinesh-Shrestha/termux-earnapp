@@ -30,6 +30,13 @@ tail -f "$PREFIX/var/log/sv/earnapp/current"
 
 See [the logging guide](docs/earnapp-logs.md) for details.
 
+## Service restarts
+
+Restarting EarnApp with `sv restart earnapp`, `sv down earnapp`, or
+`sv up earnapp` only signals EarnApp's own process tree. Other services running
+under udocker keep running. Re-run the EarnApp setup after upgrading this script
+so an existing service picks up the scoped cleanup files.
+
 ## Source
 
 The installer and project files are available in this public GitHub repository.

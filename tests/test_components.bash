@@ -336,6 +336,104 @@ else
   fail=$((fail + 1)); printf 'FAIL  write_service_files content\n' >&2
 fi
 
+# Stopping or restarting EarnApp must only signal EarnApp's own process tree.
+# The old finish/control scripts used a broad pkill that matched every
+# udocker/proot container on the device.
+_scope_prefix="$(mktemp -d)"
+_scope_svc="$_scope_prefix/var/service/earnapp"
+_scope_ctl="$_scope_svc/control"
+mkdir -p "$_scope_svc/supervise" "$_scope_prefix/var/lib/earnapp-setup"
+PREFIX="$_scope_prefix" write_service_files "$UUIDX" "$_scope_svc" "$_scope_ctl" >/dev/null 2>&1
+_scope_old_kill=0
+grep -qF 'pkill' "$_scope_ctl/t" "$_scope_svc/finish" 2>/dev/null && _scope_old_kill=1
+if [ "$_scope_old_kill" -eq 0 ] \
+   && grep -qF 'supervise/pid' "$_scope_ctl/t" \
+   && grep -qF 'earnapp.children' "$_scope_ctl/t" "$_scope_svc/finish" \
+   && grep -qF 'earnapp.children' "$_scope_svc/run"; then
+  pass=$((pass + 1)); printf 'PASS  service cleanup is scoped to the EarnApp process tree\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  service cleanup still contains a broad pkill or lacks scoped cleanup\n' >&2
+fi
+
+if [ "$_scope_old_kill" -eq 0 ]; then
+  sh -c 'sleep 60 & sleep 60 & wait' &
+  _scope_pid=$!
+  _scope_children=""
+  for _ in $(seq 1 50); do
+    _scope_children=$(ps -A -o pid=,ppid= 2>/dev/null | awk -v p="$_scope_pid" '$2 == p {print $1}')
+    [ -n "$_scope_children" ] && break
+    sleep 0.1
+  done
+  printf '%s\n' "$_scope_pid" > "$_scope_svc/supervise/pid"
+  sleep 60 &
+  _scope_foreign=$!
+  PREFIX="$_scope_prefix" sh "$_scope_ctl/t" >/dev/null 2>&1
+  _scope_parent_state=$(ps -o stat= -p "$_scope_pid" 2>/dev/null | tr -d ' ')
+  _scope_children_alive=0
+  for _scope_child in $_scope_children; do
+    _scope_child_state=$(ps -o stat= -p "$_scope_child" 2>/dev/null | tr -d ' ')
+    case "$_scope_child_state" in
+      ""|Z*) ;;
+      *) _scope_children_alive=1 ;;
+    esac
+  done
+  if case "$_scope_parent_state" in
+       ""|Z*) true ;;
+       *) false ;;
+     esac \
+     && [ "$_scope_children_alive" -eq 0 ] \
+     && kill -0 "$_scope_foreign" 2>/dev/null; then
+    pass=$((pass + 1)); printf 'PASS  control/t stops only the EarnApp process tree\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  control/t left EarnApp running or signalled an unrelated process\n' >&2
+  fi
+  wait "$_scope_pid" 2>/dev/null || true
+  kill -TERM "$_scope_foreign" 2>/dev/null || true
+  wait "$_scope_foreign" 2>/dev/null || true
+
+  sleep 60 &
+  _scope_finish_pid=$!
+  printf '%s\n' "$_scope_finish_pid" > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+  sleep 60 &
+  _scope_finish_foreign=$!
+  PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
+  _scope_finish_state=$(ps -o stat= -p "$_scope_finish_pid" 2>/dev/null | tr -d ' ')
+  if case "$_scope_finish_state" in
+       ""|Z*) true ;;
+       *) false ;;
+     esac \
+     && kill -0 "$_scope_finish_foreign" 2>/dev/null \
+     && [ ! -e "$_scope_prefix/var/lib/earnapp-setup/earnapp.children" ]; then
+    pass=$((pass + 1)); printf 'PASS  finish reaps only the recorded EarnApp children\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  finish missed its child, hit an unrelated process, or kept the snapshot\n' >&2
+  fi
+  wait "$_scope_finish_pid" 2>/dev/null || true
+  kill -TERM "$_scope_finish_foreign" 2>/dev/null || true
+  wait "$_scope_finish_foreign" 2>/dev/null || true
+else
+  fail=$((fail + 2)); printf 'FAIL  scoped cleanup behaviour not run: broad pkill still present\n' >&2
+fi
+rm -rf "$_scope_prefix"
+
+# Re-running the installer with the same UUID must refresh old service files.
+# Otherwise a patched script leaves the legacy broad-kill cleanup in place.
+_upgrade_prefix="$(mktemp -d)"
+_upgrade_svc="$_upgrade_prefix/var/service/earnapp"
+mkdir -p "$_upgrade_svc/control" "$_upgrade_svc/log"
+printf '#!/bin/sh\nexec udocker run -e EARNAPP_UUID=%s earnapp\n' "$UUIDX" > "$_upgrade_svc/run"
+printf '#!/bin/sh\npkill -f "/usr/bin/proot.*udocker-"\n' > "$_upgrade_svc/control/t"
+printf '#!/bin/sh\npkill -f "/usr/bin/proot.*udocker-"\n' > "$_upgrade_svc/finish"
+chmod 700 "$_upgrade_svc/run" "$_upgrade_svc/control/t" "$_upgrade_svc/finish"
+PREFIX="$_upgrade_prefix" write_service "$UUIDX" >/dev/null 2>&1
+if ! grep -qF 'pkill' "$_upgrade_svc/control/t" "$_upgrade_svc/finish" 2>/dev/null \
+   && grep -qF 'earnapp.children' "$_upgrade_svc/control/t" "$_upgrade_svc/finish"; then
+  pass=$((pass + 1)); printf 'PASS  same-UUID rerun upgrades legacy service cleanup\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  same-UUID rerun kept the legacy broad kill\n' >&2
+fi
+rm -rf "$_upgrade_prefix"
+
 reset_state
 DRY_RUN=0
 : > "$SCENARIO_LOG"

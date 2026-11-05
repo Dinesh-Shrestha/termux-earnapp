@@ -874,7 +874,8 @@ write_service() {
   log_run="$dir/log/run"
   if [ -f "$dir/run" ] && [ "$DRY_RUN" -eq 0 ]; then
     if grep -q "$uuid" "$dir/run"; then
-      log INFO "earnapp service already configured for $uuid"
+      log INFO "earnapp service already configured for $uuid; refreshing its files"
+      write_service_files "$uuid" "$dir" "$control" || die "earnapp service files failed"
       if [ ! -x "$log_run" ] \
          || ! grep -Fq 'share/termux-services/svlogger' "$log_run" \
          || [ ! -p "$dir/log/supervise/ok" ]; then
@@ -921,6 +922,8 @@ write_service_files() {
 
 termux-wake-lock
 
+rm -f "\${PREFIX:-/data/data/com.termux/files/usr}/var/lib/earnapp-setup/earnapp.children" 2>/dev/null || true
+
 exec udocker run \\
   -v "\$PREFIX/etc/resolv.conf:/etc/resolv.conf" \\
   -e EARNAPP_UUID=$uuid \\
@@ -928,36 +931,53 @@ exec udocker run \\
 EOF
   cat > "$control/t" <<'EOF' || die "write $control/t failed"
 #!/data/data/com.termux/files/usr/bin/sh
-
-pkill -TERM -f 'earnapp run' 2>/dev/null
-pkill -TERM -f 'earnapp autoupgrade' 2>/dev/null
-pkill -TERM -f '/usr/bin/proot.*udocker-' 2>/dev/null
-pkill -TERM -f 'udocker run.*EARNAPP_UUID' 2>/dev/null
-
-sleep 1
-
-pkill -KILL -f 'earnapp run' 2>/dev/null
-pkill -KILL -f 'earnapp autoupgrade' 2>/dev/null
-pkill -KILL -f '/usr/bin/proot.*udocker-' 2>/dev/null
-pkill -KILL -f 'udocker run.*EARNAPP_UUID' 2>/dev/null
-
+# Scoped cleanup: signal only this service's process tree. Never signal other
+# processes by name here; other container services share the same proot tree.
+PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+service_dir="$PREFIX/var/service/earnapp"
+state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+pid=${1:-}
+[ -n "$pid" ] || pid=$(cat "$service_dir/supervise/pid" 2>/dev/null)
+if [ -n "$pid" ]; then
+  snapshot=$(ps -A -o pid=,ppid= 2>/dev/null)
+  [ -n "$snapshot" ] || snapshot=$(ps -eo pid=,ppid= 2>/dev/null)
+  kids=$(printf '%s\n' "$snapshot" | awk -v root="$pid" '
+    { parent[$1] = $2; kids[$2] = kids[$2] " " $1 }
+    END { walk(root) }
+    function walk(p,   n,a,i) {
+      n = split(kids[p], a, " ")
+      for (i = 1; i <= n; i++) { walk(a[i]); print a[i] }
+    }')
+  mkdir -p "${state_file%/*}" 2>/dev/null || true
+  printf '%s\n' "$kids" > "$state_file" 2>/dev/null || true
+  for p in $kids; do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 1
+  for p in $kids; do
+    kill -KILL "$p" 2>/dev/null || true
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+fi
 exit 0
 EOF
   cat > "$dir/finish" <<'EOF' || die "write $dir/finish failed"
 #!/data/data/com.termux/files/usr/bin/sh
-
-pkill -TERM -f 'earnapp run' 2>/dev/null
-pkill -TERM -f 'earnapp autoupgrade' 2>/dev/null
-pkill -TERM -f '/usr/bin/proot.*udocker-' 2>/dev/null
-pkill -TERM -f 'udocker run.*EARNAPP_UUID' 2>/dev/null
-
-sleep 1
-
-pkill -KILL -f 'earnapp run' 2>/dev/null
-pkill -KILL -f 'earnapp autoupgrade' 2>/dev/null
-pkill -KILL -f '/usr/bin/proot.*udocker-' 2>/dev/null
-pkill -KILL -f 'udocker run.*EARNAPP_UUID' 2>/dev/null
-
+PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+if [ -f "$state_file" ]; then
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done < "$state_file"
+  sleep 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -KILL "$pid" 2>/dev/null || true
+  done < "$state_file"
+  rm -f "$state_file"
+fi
 exit 0
 EOF
   chmod +x "$dir/run" "$control/t" "$dir/finish" || die "chmod service files failed"
