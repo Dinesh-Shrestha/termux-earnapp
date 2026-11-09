@@ -1,8 +1,8 @@
 # Termux EarnApp Setup
 
 A community setup script for running EarnApp on Android through Termux and
-udocker. It can also set up Termux:Boot, SSH, Cloudflared, udocker, and the
-speedtest-go CLI.
+udocker. It can also set up Termux:Boot, SSH, Cloudflared, udocker, the
+speedtest-go CLI, and an opt-in auto-recovery job.
 
 ## Install in Termux
 
@@ -14,11 +14,48 @@ curl -fsSL https://termux-earnapp.dinesh29.com.np/earnapp-setup.sh -o earnapp-se
 bash earnapp-setup.sh
 ```
 
-Choose **6** for EarnApp, **7** to install speedtest-go, or **8** for all menu
-options. speedtest-go is an on-demand CLI; run `speedtest-go` when you want to
-test the device's internet connection. It does not run as a background service.
-Open Termux:Boot once and disable battery optimization for Termux and
-Termux:Boot if you want services to start after reboot.
+Choose **6** for EarnApp, **7** to install speedtest-go, **8** to schedule the
+auto-recovery job, or **9** for all menu options. speedtest-go is an on-demand
+CLI; run `speedtest-go` when you want to test the device's internet connection.
+It does not run as a background service. Open Termux:Boot once and disable
+battery optimization for Termux and Termux:Boot if you want services to start
+after reboot.
+
+## Auto-recovery after Android kills Termux
+
+Android may kill Termux's process when memory runs low. The optional recovery
+job asks `termux-job-scheduler` to run the Termux:Boot start script again every
+15–30 minutes, so the supervisor and its services come back without opening the
+app. Enable it from the menu (**8**) or with `--recovery`; it is also part of
+`--all` but not part of `--earnapp`.
+
+This is best effort, not a guarantee:
+
+- It needs the **Termux:API** app from F-Droid in addition to the `termux-api`
+  package. The setup detects it through its data directory
+  (`/data/data/com.termux.api`), which is visible because Termux:API shares
+  Termux's UID. Plain `pm list packages` is filtered by Android and is not used.
+- A missing Termux:API app fails immediately with install instructions. If the
+  app is installed but force-stopped, `termux-job-scheduler` hangs while waiting
+  for it; the setup caps that call at 10 seconds, warns that the job was **not**
+  scheduled, and exits non-zero. Open Termux:API, then re-run `--recovery`.
+- It reuses `~/.termux/boot/start-services`, so run `--boot` first.
+- The job is scheduled with `--network none`. That is offline-safe, but it also
+  makes `termux-job-scheduler --pending` and `--cancel` unusable (an upstream
+  Termux:API bug prints no output). Silence after scheduling is expected.
+- Force-stopping **Termux:API** cancels job 1001, and persisted jobs do not come
+  back automatically. Force-stopping Termux itself does not cancel the job, and
+  that is the case the job recovers from. Vendor "cleaner" apps or disabling the
+  job can also cancel it. Verify and cancel it over ADB instead:
+  ```sh
+  adb shell cmd jobscheduler get-job-state com.termux.api 1001
+  adb shell cmd jobscheduler cancel com.termux.api 1001
+  ```
+- Without ADB there is no in-app listing: with `--network none`, every
+  `termux-job-scheduler` query (`--pending`, `--cancel`, `--cancel-all`) crashes
+  inside Termux:API before printing. To prove it runs, force-stop Termux from
+  Android Settings, wait 15–30 minutes (Doze can delay it), then connect over
+  SSH; if `sshd` answers, the job fired and restarted the services.
 
 ## EarnApp logs
 
@@ -42,6 +79,14 @@ profile hook. Sourcing it runs `service-daemon start` even when a supervisor is
 already running, and the duplicate's short-lived `runsv` children fight the
 originals over `supervise/`. Re-run the EarnApp setup after upgrading this
 script so an existing service picks up the scoped cleanup files.
+
+APT package transactions can drop a service's `down` marker and silently disable
+it. The setup installs APT pre/post hooks that snapshot enabled services before
+a transaction and re-enable only those that went down during it. The boot script
+also runs `service-repair.sh boot` to finish an interrupted transaction. Both
+only touch services listed in `$PREFIX/var/lib/earnapp-setup/pending-services`,
+so a deliberate `sv down <service>` is left alone. Inspect it with
+`service-repair.sh status`.
 
 ## Source
 

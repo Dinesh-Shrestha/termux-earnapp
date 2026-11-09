@@ -3,6 +3,10 @@
 INST_IMAGE="ghcr.io/xterna/earnapp:alpine"
 CONTAINER_NAME="earnapp"
 UUID_PREFIX="sdk-node-"
+RECOVERY_JOB_ID=1001
+RECOVERY_PERIOD_MS=900000
+RECOVERY_TIMEOUT="${RECOVERY_TIMEOUT:-10}"
+TERMUX_API_DATA_DIR="${TERMUX_API_DATA_DIR:-/data/data/com.termux.api}"
 
 DRY_RUN=0
 FLAG_YES=0
@@ -112,6 +116,7 @@ deps_of() {
     udocker)     echo base ;;
     earnapp)     printf 'base\nboot\nudocker\n' ;;
     speedtest-go) echo base ;;
+    recovery)    printf 'base\nboot\n' ;;
   esac
 }
 
@@ -156,6 +161,7 @@ comp_tool_present() {
     cloudflared)  command -v cloudflared >/dev/null 2>&1 ;;
     udocker|earnapp) command -v udocker >/dev/null 2>&1 ;;
     speedtest-go) command -v speedtest-go >/dev/null 2>&1 ;;
+    recovery)     command -v termux-job-scheduler >/dev/null 2>&1 ;;
     *)            return 0 ;;
   esac
 }
@@ -686,6 +692,46 @@ boot_script_configured() {
     && grep -Fq 'service-repair.sh boot' "$script"
 }
 
+setup_recovery() {
+  local script job_id=$RECOVERY_JOB_ID period=$RECOVERY_PERIOD_MS rc=0
+  log INFO "Recovery: scheduling the termux-job-scheduler auto-restart job"
+  ensure_pkg termux-job-scheduler termux-api
+  if [ ! -d "$TERMUX_API_DATA_DIR" ]; then
+    log ERROR "Termux:API app is not installed (missing $TERMUX_API_DATA_DIR)"
+    log WARN "Install Termux:API from F-Droid, open it once, then re-run: bash earnapp-setup.sh --recovery"
+    return 1
+  fi
+  script=$(boot_script)
+  if [ ! -f "$script" ]; then
+    log WARN "Boot script missing: $script (run --boot to create it)"
+  elif ! grep -Fq 'start-services.sh' "$script"; then
+    log WARN "$script does not start termux-services; job $job_id will run it unchanged"
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[run] timeout -k 5 $RECOVERY_TIMEOUT termux-job-scheduler --script $script --job-id $job_id --period-ms $period --persisted true --battery-not-low false --network none"
+    return 0
+  fi
+  timeout -k 5 "$RECOVERY_TIMEOUT" termux-job-scheduler --script "$script" --job-id "$job_id" \
+    --period-ms "$period" --persisted true --battery-not-low false --network none || rc=$?
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    log WARN "termux-job-scheduler did not respond within ${RECOVERY_TIMEOUT}s; the job was not scheduled"
+    log WARN "Termux:API is installed but not answering; open the Termux:API app once, then re-run: bash earnapp-setup.sh --recovery"
+    return 1
+  fi
+  if [ "$rc" -eq 127 ]; then
+    log ERROR "timeout command not found; install coreutils with: pkg install coreutils"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    log WARN "termux-job-scheduler exited $rc; the job may still be scheduled (known Termux:API output bug)"
+    log WARN "If it never runs, open the Termux:API app once and re-run: bash earnapp-setup.sh --recovery"
+  fi
+  log INFO "Recovery job $job_id scheduled: runs every 15-30 minutes and survives reboot"
+  log INFO "Silence from termux-job-scheduler with --network none is expected"
+  log INFO "Verify over ADB: adb shell cmd jobscheduler get-job-state com.termux.api $job_id"
+  log INFO "Cancel over ADB: adb shell cmd jobscheduler cancel com.termux.api $job_id"
+}
+
 sshd_port() {
   local config="${PREFIX:-}/etc/ssh/sshd_config" port=""
   if [ -f "$config" ]; then
@@ -1159,6 +1205,7 @@ run_component() {
     udocker)     setup_udocker ;;
     earnapp)     setup_earnapp ;;
     speedtest-go) setup_speedtest_go ;;
+    recovery)    setup_recovery ;;
     *)           die "Unknown component: $1" ;;
   esac
 }
@@ -1181,6 +1228,7 @@ Components:
   --udocker            Install + verify udocker
   --earnapp            Full EarnApp bring-up (base + boot + udocker + image + service)
   --speedtest-go       Install the speedtest-go CLI
+  --recovery           Schedule the Termux:API auto-recovery job (needs Termux:API app)
   --no-<component>     Strip a component (useful with --all), e.g. --no-sshd
 
 UUID:
@@ -1220,7 +1268,7 @@ parse_args() {
     a=$1
     shift
     case "$a" in
-      --all|-a)         REQUESTED+=(base boot sshd cloudflared udocker earnapp speedtest-go) ;;
+      --all|-a)         REQUESTED+=(base boot sshd cloudflared udocker earnapp speedtest-go recovery) ;;
       --base)           REQUESTED+=(base) ;;
       --boot)           REQUESTED+=(boot) ;;
       --sshd)           REQUESTED+=(sshd) ;;
@@ -1228,6 +1276,7 @@ parse_args() {
       --udocker)        REQUESTED+=(udocker) ;;
       --earnapp)        REQUESTED+=(earnapp) ;;
       --speedtest-go)   REQUESTED+=(speedtest-go) ;;
+      --recovery)       REQUESTED+=(recovery) ;;
       --no-base)        SKIPPED+=(base) ;;
       --no-boot)        SKIPPED+=(boot) ;;
       --no-sshd)        SKIPPED+=(sshd) ;;
@@ -1235,6 +1284,7 @@ parse_args() {
       --no-udocker)     SKIPPED+=(udocker) ;;
       --no-earnapp)     SKIPPED+=(earnapp) ;;
       --no-speedtest-go) SKIPPED+=(speedtest-go) ;;
+      --no-recovery)    SKIPPED+=(recovery) ;;
       --uuid)
         [ $# -gt 0 ] || die "--uuid requires a value"
         case "$1" in
@@ -1252,7 +1302,7 @@ parse_args() {
   done
   if [ "${#REQUESTED[@]}" -eq 0 ]; then
     if [ "${#SKIPPED[@]}" -gt 0 ]; then
-      REQUESTED=(base boot sshd cloudflared udocker earnapp speedtest-go)
+      REQUESTED=(base boot sshd cloudflared udocker earnapp speedtest-go recovery)
     else
       MODE="menu"
       return 0
@@ -1261,7 +1311,7 @@ parse_args() {
   MODE="flags"
   local -a finals=()
   local c
-  for c in base boot sshd cloudflared udocker earnapp speedtest-go; do
+  for c in base boot sshd cloudflared udocker earnapp speedtest-go recovery; do
     if ! list_contains "$c" "${SKIPPED[@]}" && list_contains "$c" "${REQUESTED[@]}"; then
       finals+=("$c")
     fi
@@ -1323,9 +1373,10 @@ menu() {
     printf ' 5) udocker (install + verify)\n'
     printf ' 6) EarnApp full bring-up (includes 1, 2, 5)\n'
     printf ' 7) speedtest-go (install CLI)\n'
-    printf ' 8) Everything (1-7)\n'
+    printf ' 8) Auto-recovery job (termux-job-scheduler)\n'
+    printf ' 9) Everything (1-8)\n'
     printf ' 0) Quit\n'
-    printf 'Select an option [0-8]: '
+    printf 'Select an option [0-9]: '
     if ! read -r opt; then
       log WARN "No input (EOF); exiting"
       return 0
@@ -1338,7 +1389,8 @@ menu() {
       5) menu_run udocker ;;
       6) menu_run earnapp ;;
       7) menu_run speedtest-go ;;
-      8) menu_run base boot sshd cloudflared udocker earnapp speedtest-go ;;
+      8) menu_run recovery ;;
+      9) menu_run base boot sshd cloudflared udocker earnapp speedtest-go recovery ;;
       0) return 0 ;;
       *) log WARN "Invalid option: $opt"; continue ;;
     esac

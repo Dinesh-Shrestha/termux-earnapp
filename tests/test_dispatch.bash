@@ -78,6 +78,23 @@ parse_args --all --no-speedtest-go
 t_not_contains "--no-speedtest-go strips optional package" speedtest-go "${REQUESTED[@]}"
 
 reset_state
+parse_args --recovery
+t_contains "--recovery requests recovery" recovery "${REQUESTED[@]}"
+resolve_request recovery >/dev/null
+t_eq "recovery resolves base and boot" "base boot recovery" "${_ord[*]}"
+
+reset_state
+parse_args --all
+t_contains "--all includes recovery" recovery "${REQUESTED[@]}"
+
+reset_state
+parse_args --all --no-recovery
+t_not_contains "--no-recovery strips recovery" recovery "${REQUESTED[@]}"
+
+reset_state
+t_contains "recovery conflicts with --no-boot" "[ERROR] --no-boot conflicts with the resolved plan: a requested component depends on boot" "$( ( parse_args --recovery --no-boot; run_setup ) 2>&1 )"
+
+reset_state
 parse_args --all --no-sshd
 t_contains    "--all keeps boot"              boot        "${REQUESTED[@]}"
 t_contains    "--all keeps earnapp"           earnapp     "${REQUESTED[@]}"
@@ -204,6 +221,17 @@ _wd_o=$( { is_termux() { return 0; }
 rm -rf "$MOCKDIR43" "$_wd_h"
 t_has "menu exposes speedtest-go option" "7) speedtest-go (install CLI)" "$_wd_o"
 t_eq "menu option 7 dispatches speedtest-go" "base speedtest-go" "$(plan_of "$_wd_o")"
+
+reset_state
+DRY_RUN=1
+MOCKDIR44="$(mktemp -d)"
+_wd_h="$(mktemp -d)"
+_wd_o=$( { is_termux() { return 0; }
+  HOME="$_wd_h" PATH="$MOCKDIR44:/usr/bin:/bin" menu
+} <<< "8" 2>&1 )
+rm -rf "$MOCKDIR44" "$_wd_h"
+t_has "menu exposes recovery option" "8) Auto-recovery job" "$_wd_o"
+t_eq "menu option 8 dispatches recovery" "base boot recovery" "$(plan_of "$_wd_o")"
 
 reset_state
 DRY_RUN=1

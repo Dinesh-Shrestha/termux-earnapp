@@ -132,6 +132,99 @@ out=$(PATH="$MOCKDIR41" setup_speedtest_go 2>&1); rc=$?
 check "speedtest-go skips install when already present" "$out" "speedtest-go already installed" "$rc"
 rm -rf "$MOCKDIR41"
 
+_recovery_home="$(mktemp -d)"
+_recovery_app="$(mktemp -d)"
+mkdir -p "$_recovery_home/.termux/boot"
+printf '#!/bin/sh\n. "$PREFIX/etc/profile.d/start-services.sh"\n' \
+  > "$_recovery_home/.termux/boot/start-services"
+
+MOCKDIR45="$(mktemp -d)"
+out=$(HOME="$_recovery_home" PREFIX="$_recovery_home/prefix" DRY_RUN=1 \
+  TERMUX_API_DATA_DIR="$_recovery_app" PATH="$MOCKDIR45" setup_recovery 2>&1); rc=$?
+check "recovery installs termux-api"      "$out" "pkg install termux-api -y" "$rc"
+check "recovery uses job id 1001"         "$out" "--job-id 1001" "$rc"
+check "recovery uses a 15 minute period"  "$out" "--period-ms 900000" "$rc"
+check "recovery persists across reboot"   "$out" "--persisted true" "$rc"
+check "recovery needs no network"         "$out" "--network none" "$rc"
+check "recovery targets the boot script"  "$out" "$_recovery_home/.termux/boot/start-services" "$rc"
+check "recovery bounds the scheduler call" "$out" "timeout -k 5 10 termux-job-scheduler" "$rc"
+rm -rf "$MOCKDIR45"
+
+MOCKDIR46="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR46/termux-job-scheduler"
+chmod +x "$MOCKDIR46/termux-job-scheduler"
+out=$(HOME="$_recovery_home" DRY_RUN=0 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR46:/usr/bin:/bin" setup_recovery 2>&1); rc=$?
+check "recovery treats silent scheduler output as success" "$out" "Recovery job 1001 scheduled" "$rc"
+check "recovery explains the silent output"                "$out" "Silence from termux-job-scheduler" "$rc"
+check "recovery prints ADB verification"                   "$out" "cmd jobscheduler get-job-state com.termux.api 1001" "$rc"
+
+MOCKDIR47="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$MOCKDIR47/termux-job-scheduler"
+chmod +x "$MOCKDIR47/termux-job-scheduler"
+out=$(HOME="$_recovery_home" DRY_RUN=0 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR47:/usr/bin:/bin" setup_recovery 2>&1); rc=$?
+check "recovery tolerates scheduler exit errors" "$out" "may still be scheduled" "$rc"
+
+MOCKDIR48="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR48/termux-job-scheduler"
+printf '#!/usr/bin/env bash\nprintf "package:com.termux\\n"\n' > "$MOCKDIR48/pm"
+chmod +x "$MOCKDIR48/termux-job-scheduler" "$MOCKDIR48/pm"
+out=$(HOME="$_recovery_home" DRY_RUN=0 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR48:/usr/bin:/bin" setup_recovery 2>&1); rc=$?
+case "$out" in
+  *"Termux:API app not detected"*) _filtered=warned ;;
+  *) _filtered=quiet ;;
+esac
+check_eq "recovery ignores filtered package lists" quiet "$_filtered"
+check "filtered package list still schedules the job" "$out" "Recovery job 1001 scheduled" "$rc"
+rm -rf "$MOCKDIR46" "$MOCKDIR47" "$MOCKDIR48"
+
+MOCKDIR50="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$MOCKDIR50/termux-job-scheduler"
+chmod +x "$MOCKDIR50/termux-job-scheduler"
+_started=$SECONDS
+out=$(HOME="$_recovery_home" DRY_RUN=0 RECOVERY_TIMEOUT=1 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR50:/usr/bin:/bin" setup_recovery 2>&1); rc=$?
+_elapsed=$((SECONDS - _started))
+check_eq "recovery fails when the scheduler hangs" 1 "$rc"
+check "recovery explains a hung scheduler" "$out" "did not respond" 0
+check "recovery points at Termux:API when it hangs" "$out" "Termux:API" 0
+if [ "$_elapsed" -le 10 ]; then
+  pass=$((pass + 1)); printf 'PASS  recovery stops waiting for a hung scheduler\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  recovery stops waiting for a hung scheduler (%ss)\n' "$_elapsed" >&2
+fi
+rm -rf "$MOCKDIR50"
+
+MOCKDIR51="$(mktemp -d)"
+printf '#!/usr/bin/env bash\ntouch "$SCHEDULER_CALLED"\nexit 0\n' > "$MOCKDIR51/termux-job-scheduler"
+chmod +x "$MOCKDIR51/termux-job-scheduler"
+out=$(HOME="$_recovery_home" DRY_RUN=0 TERMUX_API_DATA_DIR="$_recovery_home/no-termux-api" \
+  SCHEDULER_CALLED="$_recovery_home/scheduler-called" \
+  PATH="$MOCKDIR51:/usr/bin:/bin" setup_recovery 2>&1); rc=$?
+check_eq "recovery fails fast when Termux:API is missing" 1 "$rc"
+check "recovery explains the missing Termux:API app" "$out" "Termux:API app is not installed" 0
+check_eq "recovery skips the scheduler when Termux:API is missing" absent \
+  "$([ -e "$_recovery_home/scheduler-called" ] && echo present || echo absent)"
+rm -rf "$MOCKDIR51"
+
+MOCKDIR52="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR52/termux-job-scheduler"
+chmod +x "$MOCKDIR52/termux-job-scheduler"
+out=$(HOME="$_recovery_home" DRY_RUN=0 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR52" setup_recovery 2>&1); rc=$?
+check_eq "recovery fails when timeout is unavailable" 1 "$rc"
+check "recovery explains a missing timeout" "$out" "timeout command not found" 0
+rm -rf "$MOCKDIR52"
+
+MOCKDIR49="$(mktemp -d)"
+_empty_home="$(mktemp -d)"
+out=$(HOME="$_empty_home" DRY_RUN=1 TERMUX_API_DATA_DIR="$_recovery_app" \
+  PATH="$MOCKDIR49" setup_recovery 2>&1); rc=$?
+check "recovery warns when the boot script is missing" "$out" "Boot script missing" "$rc"
+rm -rf "$MOCKDIR49" "$_empty_home" "$_recovery_home" "$_recovery_app"
+
 MOCKDIR22="$(mktemp -d)"
 out=$(PATH="$MOCKDIR22" setup_udocker 2>&1); rc=$?
 check "udocker install fallback" "$out" "pkg install udocker -y" "$rc"
@@ -373,6 +466,10 @@ else
   fail=$((fail + 1)); printf 'FAIL  service cleanup still contains a broad pkill or lacks scoped cleanup\n' >&2
 fi
 
+# The process-scope checks below need Linux /proc and a `ps` that supports
+# pid/ppid columns. Git Bash on Windows has neither; skip them instead of
+# reporting environment failures. The generated scripts are still checked above.
+if [ -r "/proc/$$/comm" ] && [ -w "/proc/$$/comm" ]; then
 if [ "$_scope_old_kill" -eq 0 ]; then
   sh -c 'sleep 60 & sleep 60 & wait' &
   _scope_pid=$!
@@ -494,6 +591,9 @@ if [ "$_scope_old_kill" -eq 0 ]; then
   wait "$_guard_pid" 2>/dev/null || true
 else
   fail=$((fail + 2)); printf 'FAIL  scoped cleanup behaviour not run: broad pkill still present\n' >&2
+fi
+else
+  printf 'SKIP  process-scope tests need Linux /proc\n'
 fi
 rm -rf "$_scope_prefix"
 

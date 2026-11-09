@@ -191,6 +191,8 @@ t_eq "resolve [sshd earnapp]"     "base boot sshd udocker earnapp"  "$(plan_one 
 t_eq "resolve [udocker earnapp udocker]" "base udocker boot earnapp" "$(plan_one udocker earnapp udocker)"
 t_eq "resolve [cloudflared]"      "base boot cloudflared"           "$(plan_one cloudflared)"
 t_eq "resolve [sshd cloudflared]" "base boot sshd cloudflared"       "$(plan_one sshd cloudflared)"
+t_eq "deps_of recovery"           "base boot"                       "$(deps_of recovery | tr '\n' ' ' | sed 's/ $//')"
+t_eq "resolve [recovery]"         "base boot recovery"              "$(plan_one recovery)"
 
 t_ok "list_contains present" list_contains base base boot sshd
 t_not_ok "list_contains absent" list_contains udocker base boot sshd
