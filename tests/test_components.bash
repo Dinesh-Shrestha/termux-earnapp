@@ -737,6 +737,25 @@ else
 fi
 rm -rf "$_upgrade_prefix"
 
+# --yes must still apply a different UUID. The rewrite branch used to be
+# skipped whenever FLAG_YES was set, so the old identity kept running.
+_wd_saved=${PREFIX:-}
+_uuid_prefix="$(mktemp -d)"
+_uuid_svc="$_uuid_prefix/var/service/earnapp"
+mkdir -p "$_uuid_svc/control" "$_uuid_svc/log"
+printf '#!/bin/sh\nexec udocker run -e EARNAPP_UUID=%s earnapp\n' "$UUIDX" > "$_uuid_svc/run"
+chmod 700 "$_uuid_svc/run"
+UUIDY="sdk-node-$(printf 'b%.0s' $(seq 1 32))"
+PREFIX="$_uuid_prefix" DRY_RUN=0 FLAG_YES=1 write_service "$UUIDY" >/dev/null 2>&1
+if grep -qF "$UUIDY" "$_uuid_svc/run" && ! grep -qF "$UUIDX" "$_uuid_svc/run"; then
+  pass=$((pass + 1)); printf 'PASS  write_service applies a different UUID with --yes\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  write_service kept the old UUID with --yes\n' >&2
+  printf '%s\n' "$(cat "$_uuid_svc/run" 2>/dev/null)" >&2
+fi
+rm -rf "$_uuid_prefix"
+PREFIX="$_wd_saved"
+
 reset_state
 DRY_RUN=0
 : > "$SCENARIO_LOG"
@@ -1680,6 +1699,120 @@ else
   fail=$((fail + 1)); printf 'FAIL  ensure_service waits for supervision and starts once (rc=%s started=%s sv-up-calls=%s)\n%s\n' "$rc" "$_wd_started" "$_wd_up_calls" "$out" >&2
 fi
 
+# A dead supervisor cannot create a supervise endpoint. ensure_service must
+# start it once instead of waiting ten seconds and dying.
+reset_state
+DRY_RUN=0
+_sup_saved=${PREFIX:-}
+_sup_savedpath=$PATH
+_sup_prefix="$(mktemp -d)"
+mkdir -p "$_sup_prefix/var/service/earnapp"
+MOCKDIR_SUP_START="$(mktemp -d)"
+cat > "$MOCKDIR_SUP_START/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  if [ -s "$TERMUX_SERVICE_SUPERVISOR_MARKER" ] \
+     && [ -e "$TERMUX_SERVICE_PREFIX/var/service/$2/supervise/ok" ]; then
+    printf 'run: %s: (pid 1234) 1s\n' "$2"
+  else
+    printf 'fail: %s: runsv not running\n' "$2"
+    exit 1
+  fi
+fi
+exit 0
+SH
+cat > "$MOCKDIR_SUP_START/sv-enable" <<'SH'
+#!/usr/bin/env bash
+[ -e "$TERMUX_SERVICE_PREFIX/var/service/$1/supervise/ok" ] || exit 1
+SH
+cat > "$MOCKDIR_SUP_START/service-daemon" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' >> "$TERMUX_SERVICE_SUPERVISOR_MARKER"
+mkdir -p "$TERMUX_SERVICE_PREFIX/var/service/earnapp/supervise"
+: > "$TERMUX_SERVICE_PREFIX/var/service/earnapp/supervise/ok"
+SH
+cat > "$MOCKDIR_SUP_START/pgrep" <<'SH'
+#!/usr/bin/env bash
+[ -s "$TERMUX_SERVICE_SUPERVISOR_MARKER" ]
+SH
+chmod +x "$MOCKDIR_SUP_START/sv" "$MOCKDIR_SUP_START/sv-enable" \
+  "$MOCKDIR_SUP_START/service-daemon" "$MOCKDIR_SUP_START/pgrep"
+PREFIX="$_sup_prefix"
+export TERMUX_SERVICE_PREFIX="$_sup_prefix"
+export TERMUX_SERVICE_SUPERVISOR_MARKER="$_sup_prefix/supervisor.started"
+out=$(PATH="$MOCKDIR_SUP_START:$_sup_savedpath" ensure_service earnapp 2>&1); rc=$?
+_sup_daemon=0
+[ -s "$_sup_prefix/supervisor.started" ] && _sup_daemon=1
+PATH="$_sup_savedpath"
+unset TERMUX_SERVICE_PREFIX TERMUX_SERVICE_SUPERVISOR_MARKER
+rm -rf "$MOCKDIR_SUP_START" "$_sup_prefix"
+PREFIX="$_sup_saved"
+if [ "$rc" -eq 0 ] && [ "$_sup_daemon" -eq 1 ] \
+   && case "$out" in *"sv-enable earnapp"*) true ;; *) false ;; esac; then
+  pass=$((pass + 1)); printf 'PASS  ensure_service starts a dead supervisor before waiting\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure_service did not start a dead supervisor (rc=%s daemon=%s)\n%s\n' \
+    "$rc" "$_sup_daemon" "$out" >&2
+fi
+
+# A stale supervise/ok can outlive a dead supervisor. sv-enable then fails
+# with "unable to open supervise/ok"; ensure_service must restart the
+# supervisor and retry once.
+reset_state
+DRY_RUN=0
+_retry_saved=${PREFIX:-}
+_retry_savedpath=$PATH
+_retry_prefix="$(mktemp -d)"
+mkdir -p "$_retry_prefix/var/service/earnapp/supervise"
+: > "$_retry_prefix/var/service/earnapp/supervise/ok"
+MOCKDIR_SUP_RETRY="$(mktemp -d)"
+cat > "$MOCKDIR_SUP_RETRY/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  if [ -s "$TERMUX_SERVICE_SUPERVISOR_MARKER" ] \
+     && [ -s "$TERMUX_SERVICE_ENABLED_MARKER" ]; then
+    printf 'run: %s: (pid 1234) 1s\n' "$2"
+  else
+    printf 'fail: %s: runsv not running\n' "$2"
+    exit 1
+  fi
+fi
+exit 0
+SH
+cat > "$MOCKDIR_SUP_RETRY/sv-enable" <<'SH'
+#!/usr/bin/env bash
+[ -s "$TERMUX_SERVICE_SUPERVISOR_MARKER" ] || exit 1
+printf 'enabled\n' >> "$TERMUX_SERVICE_ENABLED_MARKER"
+SH
+cat > "$MOCKDIR_SUP_RETRY/service-daemon" <<'SH'
+#!/usr/bin/env bash
+printf 'started\n' >> "$TERMUX_SERVICE_SUPERVISOR_MARKER"
+SH
+cat > "$MOCKDIR_SUP_RETRY/pgrep" <<'SH'
+#!/usr/bin/env bash
+[ -s "$TERMUX_SERVICE_SUPERVISOR_MARKER" ]
+SH
+chmod +x "$MOCKDIR_SUP_RETRY/sv" "$MOCKDIR_SUP_RETRY/sv-enable" \
+  "$MOCKDIR_SUP_RETRY/service-daemon" "$MOCKDIR_SUP_RETRY/pgrep"
+PREFIX="$_retry_prefix"
+export TERMUX_SERVICE_SUPERVISOR_MARKER="$_retry_prefix/supervisor.started"
+export TERMUX_SERVICE_ENABLED_MARKER="$_retry_prefix/service.enabled"
+out=$(PATH="$MOCKDIR_SUP_RETRY:$_retry_savedpath" ensure_service earnapp 2>&1); rc=$?
+_retry_recovered=0
+grep -q 'restarting the termux-services supervisor' <<<"$out" && _retry_recovered=1
+_retry_enabled=0
+[ -s "$_retry_prefix/service.enabled" ] && _retry_enabled=1
+PATH="$_retry_savedpath"
+unset TERMUX_SERVICE_SUPERVISOR_MARKER TERMUX_SERVICE_ENABLED_MARKER
+rm -rf "$MOCKDIR_SUP_RETRY" "$_retry_prefix"
+PREFIX="$_retry_saved"
+if [ "$rc" -eq 0 ] && [ "$_retry_recovered" -eq 1 ] && [ "$_retry_enabled" -eq 1 ]; then
+  pass=$((pass + 1)); printf 'PASS  ensure_service retries sv-enable after the supervisor dies\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  ensure_service did not recover from a dead supervisor (rc=%s recovered=%s enabled=%s)\n%s\n' \
+    "$rc" "$_retry_recovered" "$_retry_enabled" "$out" >&2
+fi
+
 # A service that never reports run must fail loudly and show its recent log,
 # otherwise setup prints "All done" while the service is down.
 reset_state
@@ -1942,6 +2075,59 @@ out=$( ( PREFIX="$_wd_prefix"
 rm -rf "$MOCKDIR29" "$_wd_prefix"
 PREFIX="$_wd_saved"
 check "earnapp re-enables when a down file is present" "$out" "sv-enable earnapp" "$rc"
+
+# A refreshed run file (new template or UUID) must be activated, not left
+# behind the already-running process. Only a real content change restarts.
+reset_state
+DRY_RUN=0
+_wd_saved=${PREFIX:-}
+_wd_savedpath=$PATH
+_restart_prefix="$(mktemp -d)"
+_restart_svc="$_restart_prefix/var/service/earnapp"
+mkdir -p "$_restart_svc/control" "$_restart_svc/log/supervise"
+PREFIX="$_restart_prefix"
+write_service_files "$UUIDX" "$_restart_svc" "$_restart_svc/control" >/dev/null 2>&1
+mkfifo "$_restart_svc/log/supervise/ok"
+# Simulate the old run template while keeping the same UUID.
+sed 's/sweep_earnapp/old_sweep/g' "$_restart_svc/run" > "$_restart_svc/run.old"
+cat "$_restart_svc/run.old" > "$_restart_svc/run"
+rm -f "$_restart_svc/run.old"
+chmod +x "$_restart_svc/run"
+MOCKDIR_RESTART="$(mktemp -d)"
+cat > "$MOCKDIR_RESTART/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  printf 'run: %s: (pid 4711) 12s\n' "$2"
+elif [ "$1" = restart ]; then
+  printf 'restart %s\n' "$2" >> "$TERMUX_SERVICE_CALLS"
+fi
+exit 0
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR_RESTART/sv-enable"
+chmod +x "$MOCKDIR_RESTART/sv" "$MOCKDIR_RESTART/sv-enable"
+export TERMUX_SERVICE_CALLS="$_restart_prefix/sv-calls"
+out=$( (
+  PREFIX="$_restart_prefix"
+  uuid_resolve(){ printf '%s' "$UUIDX"; }
+  ensure_image(){ :; }
+  ensure_container(){ :; }
+  ensure_exec_mode(){ :; }
+  setup_udocker(){ :; }
+  PATH="$MOCKDIR_RESTART:$_wd_savedpath" setup_earnapp
+) 2>&1 ); rc=$?
+_restart_calls=$(cat "$TERMUX_SERVICE_CALLS" 2>/dev/null || true)
+PATH="$_wd_savedpath"
+unset TERMUX_SERVICE_CALLS
+rm -rf "$MOCKDIR_RESTART" "$_restart_prefix"
+PREFIX="$_wd_saved"
+if [ "$rc" -eq 0 ] \
+   && case "$out" in *"Restarting earnapp to apply the updated service files"*) true ;; *) false ;; esac \
+   && grep -qF 'restart earnapp' <<<"$_restart_calls"; then
+  pass=$((pass + 1)); printf 'PASS  earnapp restarts when its run file changes\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  earnapp did not restart after its run file changed (rc=%s)\n%s\n%s\n' \
+    "$rc" "$out" "$_restart_calls" >&2
+fi
 
 # The status tail used to dump every matching process command line, which
 # leaked other services' credentials. Nothing should print that again.

@@ -207,6 +207,12 @@ wait_for_service_supervision() {
   local name=$1 ready_file="${PREFIX:-}/var/service/$1/supervise/ok" attempt=0
   [ "$DRY_RUN" -eq 1 ] && return 0
   [ -e "$ready_file" ] && return 0
+  # A dead supervisor cannot create the endpoint. Bring it back once instead
+  # of waiting for something that will never appear.
+  if ! supervisor_active; then
+    log WARN "termux-services supervisor is not running; restarting it"
+    start_termux_services
+  fi
   log INFO "Waiting for runit to register service $name"
   while [ "$attempt" -lt 100 ]; do
     [ -e "$ready_file" ] && return 0
@@ -246,7 +252,18 @@ ensure_service() {
     log INFO "$name has a down file; re-enabling"
   fi
   wait_for_service_supervision "$name"
-  step sv-enable "$name" || die "sv-enable $name failed"
+  if ! step sv-enable "$name"; then
+    # sv-enable fails with "unable to open supervise/ok" when the supervisor
+    # died after leaving a stale endpoint behind. Restart it once and retry.
+    if [ "$DRY_RUN" -eq 0 ] && ! supervisor_active; then
+      log WARN "sv-enable $name failed; restarting the termux-services supervisor"
+      start_termux_services
+      wait_for_service_supervision "$name"
+      step sv-enable "$name" || die "sv-enable $name failed"
+    else
+      die "sv-enable $name failed"
+    fi
+  fi
   SERVICE_JUST_STARTED=1
   if ! wait_for_service_up "$name"; then
     log_file="${PREFIX:-}/var/log/sv/$name/current"
@@ -593,6 +610,17 @@ EOF
 
 supervisor_running() {
   command -v pgrep >/dev/null 2>&1 && pgrep -x runsvdir >/dev/null 2>&1
+}
+
+supervisor_active() {
+  local pidfile="${PREFIX:-}/var/run/service-daemon.pid" pid=""
+  supervisor_running && return 0
+  [ -r "$pidfile" ] || return 1
+  read -r pid < "$pidfile" 2>/dev/null || pid=""
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null
 }
 
 start_termux_services() {
@@ -979,10 +1007,12 @@ ensure_exec_mode() {
 }
 
 write_service() {
-  local uuid=$1 dir control log_run
+  local uuid=$1 dir control log_run before after
+  SERVICE_FILES_CHANGED=0
   dir=$(svc_dir)
   control="$dir/control"
   log_run="$dir/log/run"
+  [ -f "$dir/run" ] && before=$(cat "$dir/run" 2>/dev/null || true)
   if [ -f "$dir/run" ] && [ "$DRY_RUN" -eq 0 ]; then
     if grep -q "$uuid" "$dir/run"; then
       log INFO "earnapp service already configured for $uuid; refreshing its files"
@@ -993,13 +1023,17 @@ write_service() {
         write_service_logger "$dir" || die "earnapp service logger setup failed"
         EARNAPP_LOGGER_REPAIRED=1
       fi
-    elif [ "$FLAG_YES" -eq 0 ] && ask_yn "earnapp service exists with a different UUID. Rewrite it?" y; then
+    elif ask_yn "earnapp service exists with a different UUID. Rewrite it?" y; then
       write_service_files "$uuid" "$dir" "$control" || die "earnapp service files failed"
     else
       log INFO "Keeping existing earnapp service"
     fi
   else
     write_service_files "$uuid" "$dir" "$control" || die "earnapp service files failed"
+  fi
+  if [ "$DRY_RUN" -eq 0 ]; then
+    after=$(cat "$dir/run" 2>/dev/null || true)
+    [ "$before" = "$after" ] || SERVICE_FILES_CHANGED=1
   fi
 }
 
@@ -1208,7 +1242,7 @@ EOF
 }
 
 setup_earnapp() {
-  local uuid plat service_dir attempt
+  local uuid plat service_dir attempt log_file
   uuid=$(uuid_resolve)
   log INFO "Using UUID: $uuid"
   if ! command -v udocker >/dev/null 2>&1; then
@@ -1236,6 +1270,18 @@ setup_earnapp() {
     done
     if [ ! -p "$service_dir/log/supervise/ok" ]; then
       die "EarnApp logger did not start; inspect $service_dir/log/run"
+    fi
+  elif [ "$SERVICE_FILES_CHANGED" -eq 1 ] && [ "$SERVICE_JUST_STARTED" -eq 0 ]; then
+    log INFO "Restarting earnapp to apply the updated service files"
+    step sv restart earnapp || die "Could not restart earnapp after updating its service files"
+    if ! wait_for_service_up earnapp; then
+      log_file="${PREFIX:-}/var/log/sv/earnapp/current"
+      log ERROR "earnapp did not come up after restart"
+      if [ -r "$log_file" ]; then
+        log ERROR "Recent earnapp log ($log_file):"
+        tail -n 20 "$log_file" >&2 || true
+      fi
+      die "earnapp failed to restart; inspect $log_file"
     fi
   fi
   log INFO "Registration link: https://earnapp.com/r/$uuid"
