@@ -460,7 +460,11 @@ if [ "$_scope_old_kill" -eq 0 ] \
    && grep -qF 'earnapp.children' "$_scope_svc/run" \
    && grep -qF 'pgrep -P' "$_scope_ctl/t" \
    && ! grep -qF 'ps -A -o pid' "$_scope_ctl/t" \
-   && grep -qF 'runsv|runsvdir' "$_scope_ctl/t" "$_scope_svc/finish"; then
+   && grep -qF 'runsv|runsvdir' "$_scope_ctl/t" "$_scope_svc/finish" \
+   && grep -qF 'earnapp (run|autoupgrade)' "$_scope_svc/run" \
+   && grep -qF 'earnapp (run|autoupgrade)' "$_scope_svc/finish" \
+   && grep -qF 'udocker run .*earnapp' "$_scope_svc/run" \
+   && grep -qF 'udocker run .*earnapp' "$_scope_svc/finish"; then
   pass=$((pass + 1)); printf 'PASS  service cleanup is scoped to the EarnApp process tree\n'
 else
   fail=$((fail + 1)); printf 'FAIL  service cleanup still contains a broad pkill or lacks scoped cleanup\n' >&2
@@ -552,6 +556,95 @@ if [ "$_scope_old_kill" -eq 0 ]; then
   wait "$_scope_finish_pid2" 2>/dev/null || true
   kill -TERM "$_scope_finish_foreign" 2>/dev/null || true
   wait "$_scope_finish_foreign" 2>/dev/null || true
+
+  # The command-line sweep is the only thing that can reap EarnApp processes
+  # that were reparented out of the service tree (pgrep -P sees nothing).
+  # Stage real processes whose cmdlines match the Termux forms and make sure
+  # finish removes them without touching an unrelated process.
+  _sweep_bin="$_scope_prefix/sweep-bin"
+  mkdir -p "$_sweep_bin"
+  cat > "$_sweep_bin/earnapp" <<'SH'
+#!/bin/sh
+trap 'exit 0' TERM
+while :; do sleep 1; done
+SH
+  cat > "$_sweep_bin/udocker" <<'SH'
+#!/bin/sh
+trap 'exit 0' TERM
+while :; do sleep 1; done
+SH
+  chmod +x "$_sweep_bin/earnapp" "$_sweep_bin/udocker"
+  (
+    "$_sweep_bin/earnapp" run &
+    printf '%s\n' "$!" > "$_scope_prefix/sweep-earnapp.pid"
+  )
+  (
+    "$_sweep_bin/udocker" run -e EARNAPP_UUID=test earnapp &
+    printf '%s\n' "$!" > "$_scope_prefix/sweep-udocker.pid"
+  )
+  sleep 60 &
+  _sweep_foreign=$!
+  for _ in $(seq 1 50); do
+    [ -s "$_scope_prefix/sweep-earnapp.pid" ] \
+      && [ -s "$_scope_prefix/sweep-udocker.pid" ] && break
+    sleep 0.1
+  done
+  _sweep_earnapp_pid=$(cat "$_scope_prefix/sweep-earnapp.pid" 2>/dev/null)
+  _sweep_udocker_pid=$(cat "$_scope_prefix/sweep-udocker.pid" 2>/dev/null)
+  PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
+  _sweep_earnapp_state=$(ps -o stat= -p "$_sweep_earnapp_pid" 2>/dev/null | tr -d ' ')
+  _sweep_udocker_state=$(ps -o stat= -p "$_sweep_udocker_pid" 2>/dev/null | tr -d ' ')
+  if case "$_sweep_earnapp_state" in ""|Z*) true ;; *) false ;; esac \
+     && case "$_sweep_udocker_state" in ""|Z*) true ;; *) false ;; esac \
+     && kill -0 "$_sweep_foreign" 2>/dev/null; then
+    pass=$((pass + 1)); printf 'PASS  finish sweeps reparented EarnApp and udocker processes\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  finish missed a reparented EarnApp process or hit an unrelated one\n' >&2
+  fi
+  kill -TERM "$_sweep_earnapp_pid" "$_sweep_udocker_pid" 2>/dev/null || true
+  wait "$_sweep_earnapp_pid" 2>/dev/null || true
+  wait "$_sweep_udocker_pid" 2>/dev/null || true
+  kill -TERM "$_sweep_foreign" 2>/dev/null || true
+  wait "$_sweep_foreign" 2>/dev/null || true
+
+  # A restart runs `run` after finish may have been skipped; run must clear a
+  # reparented EarnApp before it launches the new container.
+  cat > "$_sweep_bin/udocker" <<SH
+#!/bin/sh
+printf '%s\n' "\$*" > "$_scope_prefix/sweep-udocker.args"
+SH
+  chmod +x "$_sweep_bin/udocker"
+  cat > "$_sweep_bin/termux-wake-lock" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  chmod +x "$_sweep_bin/termux-wake-lock"
+  (
+    "$_sweep_bin/earnapp" run &
+    printf '%s\n' "$!" > "$_scope_prefix/run-sweep.pid"
+  )
+  sleep 60 &
+  _run_sweep_foreign=$!
+  for _ in $(seq 1 50); do
+    [ -s "$_scope_prefix/run-sweep.pid" ] && break
+    sleep 0.1
+  done
+  _run_sweep_pid=$(cat "$_scope_prefix/run-sweep.pid" 2>/dev/null)
+  PATH="$_sweep_bin:$PATH" PREFIX="$_scope_prefix" \
+    sh "$_scope_svc/run" >/dev/null 2>&1
+  _run_sweep_state=$(ps -o stat= -p "$_run_sweep_pid" 2>/dev/null | tr -d ' ')
+  if case "$_run_sweep_state" in ""|Z*) true ;; *) false ;; esac \
+     && grep -qF 'EARNAPP_UUID=' "$_scope_prefix/sweep-udocker.args" 2>/dev/null \
+     && grep -qF 'earnapp' "$_scope_prefix/sweep-udocker.args" 2>/dev/null \
+     && kill -0 "$_run_sweep_foreign" 2>/dev/null; then
+    pass=$((pass + 1)); printf 'PASS  run sweeps a reparented EarnApp before launching udocker\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  run left a reparented EarnApp running or did not launch udocker\n' >&2
+  fi
+  kill -TERM "$_run_sweep_pid" 2>/dev/null || true
+  wait "$_run_sweep_pid" 2>/dev/null || true
+  kill -TERM "$_run_sweep_foreign" 2>/dev/null || true
+  wait "$_run_sweep_foreign" 2>/dev/null || true
 
   # A stale or recycled supervise/pid must never let cleanup signal a
   # supervisor. The guard refuses the pid and signals nothing; its non-zero

@@ -1031,6 +1031,32 @@ write_service_files() {
   cat > "$dir/run" <<EOF || die "write $dir/run failed"
 #!/data/data/com.termux/files/usr/bin/sh
 
+# Clear EarnApp processes that were reparented out of the service tree before
+# starting a new container. Match the command line because the app runs under
+# the Termux linker, so its process name is never earnapp.
+sweep_earnapp() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  targets=""
+  for pid in \$(pgrep -f 'earnapp (run|autoupgrade)' 2>/dev/null) \$(pgrep -f 'udocker run .*earnapp' 2>/dev/null); do
+    case "\$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "\$pid" -gt 1 ] || continue
+    [ "\$pid" = "\$\$" ] && continue
+    case "\$(cat "/proc/\$pid/comm" 2>/dev/null)" in
+      runsv|runsvdir) continue ;;
+    esac
+    targets="\$targets \$pid"
+  done
+  [ -n "\$targets" ] || return 0
+  for pid in \$targets; do
+    kill -TERM "\$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in \$targets; do
+    kill -KILL "\$pid" 2>/dev/null || true
+  done
+}
+
+sweep_earnapp
 termux-wake-lock
 
 rm -f "\${PREFIX:-/data/data/com.termux/files/usr}/var/lib/earnapp-setup/earnapp.children" 2>/dev/null || true
@@ -1154,6 +1180,27 @@ if [ -f "$state_file" ]; then
   done < "$state_file"
   rm -f "$state_file"
 fi
+
+# control/t only walks descendants of the live supervisor, so a process that
+# was reparented after a crash is invisible to it. Match the command line to
+# reap those orphans without touching another service's udocker processes.
+sweep_earnapp() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  targets=""
+  for pid in $(pgrep -f 'earnapp (run|autoupgrade)' 2>/dev/null) $(pgrep -f 'udocker run .*earnapp' 2>/dev/null); do
+    refuse_pid "$pid" && continue
+    targets="$targets $pid"
+  done
+  [ -n "$targets" ] || return 0
+  for pid in $targets; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in $targets; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+sweep_earnapp
 exit 0
 EOF
   chmod +x "$dir/run" "$control/t" "$dir/finish" || die "chmod service files failed"
