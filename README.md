@@ -42,7 +42,13 @@ This is best effort, not a guarantee:
 - It reuses `~/.termux/boot/start-services`, so run `--boot` first.
 - The job is scheduled with `--network none`. That is offline-safe, but it also
   makes `termux-job-scheduler --pending` and `--cancel` unusable (an upstream
-  Termux:API bug prints no output). Silence after scheduling is expected.
+  Termux:API bug crashes while formatting the result, after the job is already
+  scheduled). Silence after scheduling is expected.
+- On Android 9+ that bug also raises a notification titled `Error in
+  ResultReturner` with a `NullPointerException` at
+  `JobSchedulerAPI.formatJobInfo`. It is harmless: `schedule()` runs first, so
+  job 1001 is registered before the crash and only the confirmation message is
+  lost. Ignore the notification; it is not a scheduling failure.
 - Force-stopping **Termux:API** cancels job 1001, and persisted jobs do not come
   back automatically. Force-stopping Termux itself does not cancel the job, and
   that is the case the job recovers from. Vendor "cleaner" apps or disabling the
@@ -52,10 +58,10 @@ This is best effort, not a guarantee:
   adb shell cmd jobscheduler cancel com.termux.api 1001
   ```
 - Without ADB there is no in-app listing: with `--network none`, every
-  `termux-job-scheduler` query (`--pending`, `--cancel`, `--cancel-all`) crashes
-  inside Termux:API before printing. To prove it runs, force-stop Termux from
-  Android Settings, wait 15–30 minutes (Doze can delay it), then connect over
-  SSH; if `sshd` answers, the job fired and restarted the services.
+  `termux-job-scheduler` query (`--pending`, `--cancel`, `--cancel-all`) hits the
+  same `formatJobInfo` crash before printing. To prove the job runs, force-stop
+  Termux from Android Settings, wait 15–30 minutes (Doze can delay it), then
+  connect over SSH; if `sshd` answers, the job fired and restarted the services.
 
 ## EarnApp logs
 
