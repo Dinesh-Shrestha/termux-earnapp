@@ -675,26 +675,49 @@ start_termux_services() {
   return 0
 }
 
+ensure_wake_lock() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[run] termux-wake-lock"
+    return 0
+  fi
+  if ! command -v termux-wake-lock >/dev/null 2>&1; then
+    log WARN "termux-wake-lock is not available; background services may be paused"
+    return 0
+  fi
+  if step termux-wake-lock; then
+    log INFO "Termux wake lock acquired for background services"
+  else
+    log WARN "termux-wake-lock failed; background services may be paused"
+  fi
+  return 0
+}
+
+append_boot_line() {
+  local script=$1 pattern=$2 line=$3
+  [ -f "$script" ] || return 0
+  grep -Fq -- "$pattern" "$script" 2>/dev/null && return 0
+  log INFO "[append] $script"
+  if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
+  if [ -s "$script" ] && [ -n "$(tail -c 1 "$script")" ]; then
+    printf '\n' >> "$script" || die "failed to append to $script"
+  fi
+  printf '%s\n' "$line" >> "$script" || die "failed to append to $script"
+}
+
 setup_boot() {
   local script created=0
   log INFO "Boot: ensuring termux-services and configuring Termux:Boot"
   ensure_pkg sv-enable termux-services
   ensure_service_repair
   start_termux_services
+  ensure_wake_lock
   step sh "${PREFIX:-}/var/lib/earnapp-setup/service-repair.sh" repair || true
   script=$(boot_script)
   if [ -f "$script" ] && boot_script_configured "$script"; then
     log INFO "Termux:Boot start-services script already configured"
-  elif [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
-       && ! grep -Fq 'service-repair.sh boot' "$script"; then
-    log INFO "[append] $script"
-    if [ "$DRY_RUN" -eq 0 ]; then
-      if [ -s "$script" ] && [ -n "$(tail -c 1 "$script")" ]; then
-        printf '\n' >> "$script" || die "failed to append service repair to $script"
-      fi
-      printf '%s\n' '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true' >> "$script" \
-        || die "failed to append service repair to $script"
-    fi
+  elif [ -f "$script" ] && grep -Fq 'start-services.sh' "$script"; then
+    append_boot_line "$script" 'termux-wake-lock' 'termux-wake-lock'
+    append_boot_line "$script" 'service-repair.sh boot' '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true'
   elif [ -f "$script" ] && [ "$DRY_RUN" -eq 0 ]; then
     if [ "$FLAG_YES" -eq 0 ] && ask_yn "start-services already exists. Replace it?" n; then
       write_start_services
@@ -717,6 +740,7 @@ setup_boot() {
 boot_script_configured() {
   local script=${1:-$(boot_script)}
   [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
+    && grep -Fq 'termux-wake-lock' "$script" \
     && grep -Fq 'service-repair.sh boot' "$script"
 }
 

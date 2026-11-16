@@ -21,6 +21,12 @@ It does not run as a background service. Open Termux:Boot once and disable
 battery optimization for Termux and Termux:Boot if you want services to start
 after reboot.
 
+Whenever setup configures the boot/service layer (SSH, Cloudflared, EarnApp,
+the recovery job, or the boot component itself), it acquires a Termux wake lock
+immediately and adds `termux-wake-lock` to the Termux:Boot script so the lock
+returns after reboot. Components that do not start a service (base, udocker,
+speedtest-go) do not take a wake lock.
+
 ## Auto-recovery after Android kills Termux
 
 Android may kill Termux's process when memory runs low. The optional recovery

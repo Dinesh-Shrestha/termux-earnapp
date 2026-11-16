@@ -2611,7 +2611,10 @@ boot_script_configured "$_repair_one"; rc=$?
 check_eq "one-marker boot script is not configured" "1" "$rc"
 printf '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' >> "$_repair_one"
 boot_script_configured "$_repair_one"; rc=$?
-check_eq "two-marker boot script is configured" "0" "$rc"
+check_eq "boot script without a wake lock is not configured" "1" "$rc"
+printf 'termux-wake-lock\n' >> "$_repair_one"
+boot_script_configured "$_repair_one"; rc=$?
+check_eq "three-marker boot script is configured" "0" "$rc"
 
 reset_state
 DRY_RUN=0
@@ -2631,6 +2634,8 @@ out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </
 check "migration logs the real append" "$out" "[append] $_repair_script"
 check_eq "migration appends the repair line once" "1" \
   "$(grep -c 'service-repair.sh boot' "$_repair_script")"
+check_eq "migration appends the wake lock once" "1" \
+  "$(grep -cxF 'termux-wake-lock' "$_repair_script")"
 check_eq "migration keeps the start-services line" "1" \
   "$(grep -c 'start-services.sh' "$_repair_script")"
 check_eq "migration preserves the original first line" \
@@ -2708,6 +2713,37 @@ REQUESTED=(base)
 _repair_empty="$(mktemp -d)"
 ( set -u; unset PREFIX; PATH="$_repair_empty:/usr/bin:/bin" setup_base ) >/dev/null 2>&1; rc=$?
 check_eq "base dry run works with PREFIX unset under set -u" "0" "$rc"
+
+reset_state
+DRY_RUN=0
+_wake_stub="$(mktemp -d)"
+_wake_marker="$(mktemp)"
+cat > "$_wake_stub/termux-wake-lock" <<SH
+#!/usr/bin/env bash
+printf 'called\n' >> "$_wake_marker"
+exit 0
+SH
+chmod +x "$_wake_stub/termux-wake-lock"
+out=$(PATH="$_wake_stub:/usr/bin:/bin" ensure_wake_lock 2>&1); rc=$?
+check_eq "wake lock helper invokes termux-wake-lock" "called" "$(cat "$_wake_marker" 2>/dev/null)"
+check "wake lock helper reports success" "$out" "wake lock acquired"
+check_eq "wake lock helper succeeds" "0" "$rc"
+rm -rf "$_wake_stub" "$_wake_marker"
+
+reset_state
+DRY_RUN=1
+_wake_home="$(mktemp -d)"
+_wake_boot_stub="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_wake_boot_stub/sv-enable"
+chmod +x "$_wake_boot_stub/sv-enable"
+out=$(HOME="$_wake_home" PATH="$_wake_boot_stub:/usr/bin:/bin" setup_boot 2>&1); rc=$?
+_wake_sup_i=$(printf '%s\n' "$out" | grep -n '\[run\] service-daemon start' | head -n 1 | cut -d: -f1)
+_wake_run_i=$(printf '%s\n' "$out" | grep -n '\[run\] termux-wake-lock' | head -n 1 | cut -d: -f1)
+check "boot acquires the wake lock during setup" "$out" "[run] termux-wake-lock"
+check_eq "boot acquires the wake lock after starting the supervisor" "yes" \
+  "$([ -n "$_wake_sup_i" ] && [ -n "$_wake_run_i" ] && [ "$_wake_sup_i" -lt "$_wake_run_i" ] && echo yes)"
+check_eq "boot wake lock dry run exits 0" "0" "$rc"
+rm -rf "$_wake_home" "$_wake_boot_stub"
 
 PREFIX="$_repair_saved_prefix"
 DRY_RUN="$_repair_saved_dry"
