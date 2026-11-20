@@ -450,14 +450,14 @@ fi
 _scope_prefix="$(mktemp -d)"
 _scope_svc="$_scope_prefix/var/service/earnapp"
 _scope_ctl="$_scope_svc/control"
-mkdir -p "$_scope_svc/supervise" "$_scope_prefix/var/lib/earnapp-setup"
+mkdir -p "$_scope_svc/supervise" "$_scope_prefix/var/lib/earnapp"
 PREFIX="$_scope_prefix" write_service_files "$UUIDX" "$_scope_svc" "$_scope_ctl" >/dev/null 2>&1
 _scope_old_kill=0
 grep -qF 'pkill' "$_scope_ctl/t" "$_scope_svc/finish" 2>/dev/null && _scope_old_kill=1
 if [ "$_scope_old_kill" -eq 0 ] \
    && grep -qF 'supervise/pid' "$_scope_ctl/t" \
-   && grep -qF 'earnapp.children' "$_scope_ctl/t" "$_scope_svc/finish" \
-   && grep -qF 'earnapp.children' "$_scope_svc/run" \
+   && grep -qF 'var/lib/earnapp/earnapp.children' "$_scope_ctl/t" "$_scope_svc/finish" \
+   && grep -qF 'var/lib/earnapp/earnapp.children' "$_scope_svc/run" \
    && grep -qF 'pgrep -P' "$_scope_ctl/t" \
    && ! grep -qF 'ps -A -o pid' "$_scope_ctl/t" \
    && grep -qF 'runsv|runsvdir' "$_scope_ctl/t" "$_scope_svc/finish" \
@@ -512,7 +512,7 @@ if [ "$_scope_old_kill" -eq 0 ]; then
 
   # finish reads the snapshot one pid per line, so control/t must record it
   # that way too; a space-separated line makes finish refuse the whole list.
-  _scope_state_file="$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+  _scope_state_file="$_scope_prefix/var/lib/earnapp/earnapp.children"
   _scope_recorded_count=$(grep -c . "$_scope_state_file" 2>/dev/null || true)
   _scope_expected_count=0
   for _scope_child in $_scope_children; do
@@ -532,7 +532,7 @@ if [ "$_scope_old_kill" -eq 0 ]; then
   sleep 60 &
   _scope_finish_pid2=$!
   printf '%s\n%s\n' "$_scope_finish_pid" "$_scope_finish_pid2" \
-    > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+    > "$_scope_prefix/var/lib/earnapp/earnapp.children"
   sleep 60 &
   _scope_finish_foreign=$!
   PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
@@ -547,7 +547,7 @@ if [ "$_scope_old_kill" -eq 0 ]; then
           *) false ;;
         esac \
      && kill -0 "$_scope_finish_foreign" 2>/dev/null \
-     && [ ! -e "$_scope_prefix/var/lib/earnapp-setup/earnapp.children" ]; then
+     && [ ! -e "$_scope_prefix/var/lib/earnapp/earnapp.children" ]; then
     pass=$((pass + 1)); printf 'PASS  finish reaps only the recorded EarnApp children\n'
   else
     fail=$((fail + 1)); printf 'FAIL  finish missed its child, hit an unrelated process, or kept the snapshot\n' >&2
@@ -670,7 +670,7 @@ SH
     else
       fail=$((fail + 1)); printf 'FAIL  control/t signalled a supervisor pid or did not defer to runsv\n' >&2
     fi
-    printf '%s\n' "$_guard_pid" > "$_scope_prefix/var/lib/earnapp-setup/earnapp.children"
+    printf '%s\n' "$_guard_pid" > "$_scope_prefix/var/lib/earnapp/earnapp.children"
     PREFIX="$_scope_prefix" sh "$_scope_svc/finish" >/dev/null 2>&1
     if kill -0 "$_guard_pid" 2>/dev/null; then
       pass=$((pass + 1)); printf 'PASS  finish refuses to reap a supervisor pid\n'
@@ -689,6 +689,133 @@ else
   printf 'SKIP  process-scope tests need Linux /proc\n'
 fi
 rm -rf "$_scope_prefix"
+
+# The child pid snapshot moved out of the legacy earnapp-setup directory. The
+# finalizer keeps it while any service file still uses the old path and removes
+# it once every service file points at the new location.
+DRY_RUN=0
+_children_prefix="$(mktemp -d)"
+mkdir -p "$_children_prefix/var/lib/earnapp-setup" \
+  "$_children_prefix/var/service/earnapp"
+printf '123\n' > "$_children_prefix/var/lib/earnapp-setup/earnapp.children"
+printf '$PREFIX/var/lib/earnapp-setup/earnapp.children\n' \
+  > "$_children_prefix/var/service/earnapp/run"
+PREFIX="$_children_prefix" finalize_service_repair_migration >/dev/null 2>&1
+check_eq "children kept while a service references it" "yes" \
+  "$([ -e "$_children_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+printf '$PREFIX/var/lib/earnapp/earnapp.children\n' \
+  > "$_children_prefix/var/service/earnapp/run"
+PREFIX="$_children_prefix" finalize_service_repair_migration >/dev/null 2>&1
+check_eq "unreferenced children removed" "no" \
+  "$([ -e "$_children_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+rm -rf "$_children_prefix"
+
+# Generated files use the new path.
+_children_svc="$(mktemp -d)"
+PREFIX="$_children_svc" write_service_files "$HEX32" "$_children_svc" "$_children_svc/control" >/dev/null 2>&1
+check "run uses the new children path" \
+  "$(cat "$_children_svc/run")" 'var/lib/earnapp/earnapp.children'
+check "control/t uses the new children path" \
+  "$(cat "$_children_svc/control/t")" 'var/lib/earnapp/earnapp.children'
+check "finish uses the new children path" \
+  "$(cat "$_children_svc/finish")" 'var/lib/earnapp/earnapp.children'
+rm -rf "$_children_svc"
+
+# run clears a stale legacy snapshot best-effort. Stub pgrep so the process
+# sweep is a no-op and the assertion only covers the file cleanup.
+_children_run_prefix="$(mktemp -d)"
+_children_bin="$(mktemp -d)"
+mkdir -p "$_children_run_prefix/var/lib/earnapp-setup"
+printf '999\n' > "$_children_run_prefix/var/lib/earnapp-setup/earnapp.children"
+for _children_cmd in pgrep termux-wake-lock udocker; do
+  printf '#!/bin/sh\nexit 0\n' > "$_children_bin/$_children_cmd"
+  chmod +x "$_children_bin/$_children_cmd"
+done
+PREFIX="$_children_run_prefix" write_service_files "$HEX32" \
+  "$_children_run_prefix" "$_children_run_prefix/control" >/dev/null 2>&1
+PATH="$_children_bin:/usr/bin:/bin" PREFIX="$_children_run_prefix" \
+  sh "$_children_run_prefix/run" >/dev/null 2>&1
+rc=$?
+check_eq "run clears a legacy children snapshot" "no" \
+  "$([ -e "$_children_run_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+check_eq "run cleanup exits successfully" "0" "$rc"
+rm -rf "$_children_run_prefix" "$_children_bin"
+
+# setup_earnapp finalizes the migration only after a successful service rewrite.
+_earnapp_stub="$(mktemp -d)"
+cat > "$_earnapp_stub/sv" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = status ]; then
+  printf 'run: %s: (pid 4711) 12s\n' "$2"
+fi
+exit 0
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_earnapp_stub/sv-enable"
+chmod +x "$_earnapp_stub/sv" "$_earnapp_stub/sv-enable"
+_earnapp_setup_fixture() {
+  local prefix=$1 uuid=$2
+  local svc="$prefix/var/service/earnapp"
+  mkdir -p "$prefix/var/lib/earnapp-setup" "$svc/control" "$svc/log/supervise"
+  write_service_files "$uuid" "$svc" "$svc/control" >/dev/null 2>&1
+  mkfifo "$svc/log/supervise/ok"
+  # Simulate service files from the previous release, which used the old path.
+  for f in "$svc/run" "$svc/control/t" "$svc/finish"; do
+    sed 's|var/lib/earnapp/earnapp.children|var/lib/earnapp-setup/earnapp.children|g' \
+      "$f" > "$f.old"
+    cat "$f.old" > "$f"
+    rm -f "$f.old"
+    chmod +x "$f"
+  done
+  printf '123\n' > "$prefix/var/lib/earnapp-setup/earnapp.children"
+}
+_earnapp_setup_prefix="$(mktemp -d)"
+_earnapp_setup_fixture "$_earnapp_setup_prefix" "$UUIDX"
+(
+  PREFIX="$_earnapp_setup_prefix"
+  uuid_resolve() { printf '%s' "$UUIDX"; }
+  ensure_image() { :; }
+  ensure_container() { :; }
+  ensure_exec_mode() { :; }
+  setup_udocker() { :; }
+  PATH="$_earnapp_stub:/usr/bin:/bin" setup_earnapp
+) >/dev/null 2>&1
+rc=$?
+check_eq "earnapp rewrite exits successfully" "0" "$rc"
+check_eq "earnapp rewrite drops the legacy children file" "no" \
+  "$([ -e "$_earnapp_setup_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+check_eq "earnapp rewrite installs the new children path" "3" \
+  "$(grep -lF 'var/lib/earnapp/earnapp.children' \
+      "$_earnapp_setup_prefix/var/service/earnapp/run" \
+      "$_earnapp_setup_prefix/var/service/earnapp/control/t" \
+      "$_earnapp_setup_prefix/var/service/earnapp/finish" 2>/dev/null | wc -l)"
+rm -rf "$_earnapp_setup_prefix"
+
+# Declining a different-UUID rewrite must leave the old service files and the
+# legacy snapshot working; the finalizer may not clean up in that case.
+_earnapp_declined_prefix="$(mktemp -d)"
+_earnapp_other_uuid="sdk-node-$(printf 'b%.0s' $(seq 1 32))"
+_earnapp_setup_fixture "$_earnapp_declined_prefix" "$UUIDX"
+_declined_before=$(cd "$_earnapp_declined_prefix/var/service/earnapp" \
+  && cksum run control/t finish)
+(
+  PREFIX="$_earnapp_declined_prefix"
+  uuid_resolve() { printf '%s' "$_earnapp_other_uuid"; }
+  ensure_image() { :; }
+  ensure_container() { :; }
+  ensure_exec_mode() { :; }
+  setup_udocker() { :; }
+  ask_yn() { return 1; }
+  PATH="$_earnapp_stub:/usr/bin:/bin" setup_earnapp
+) >/dev/null 2>&1
+rc=$?
+_declined_after=$(cd "$_earnapp_declined_prefix/var/service/earnapp" \
+  && cksum run control/t finish)
+check_eq "declined rewrite exits successfully" "0" "$rc"
+check_eq "declined rewrite keeps the legacy children file" "yes" \
+  "$([ -e "$_earnapp_declined_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+check_eq "declined rewrite leaves the old service files working" "$_declined_before" \
+  "$_declined_after"
+rm -rf "$_earnapp_declined_prefix" "$_earnapp_stub"
 
 # Sourcing the termux-services profile hook starts a second runsvdir when the
 # manager already runs one; the setup must start the supervisor itself and
@@ -730,7 +857,7 @@ printf '#!/bin/sh\npkill -f "/usr/bin/proot.*udocker-"\n' > "$_upgrade_svc/finis
 chmod 700 "$_upgrade_svc/run" "$_upgrade_svc/control/t" "$_upgrade_svc/finish"
 PREFIX="$_upgrade_prefix" write_service "$UUIDX" >/dev/null 2>&1
 if ! grep -qF 'pkill' "$_upgrade_svc/control/t" "$_upgrade_svc/finish" 2>/dev/null \
-   && grep -qF 'earnapp.children' "$_upgrade_svc/control/t" "$_upgrade_svc/finish"; then
+   && grep -qF 'var/lib/earnapp/earnapp.children' "$_upgrade_svc/control/t" "$_upgrade_svc/finish"; then
   pass=$((pass + 1)); printf 'PASS  same-UUID rerun upgrades legacy service cleanup\n'
 else
   fail=$((fail + 1)); printf 'FAIL  same-UUID rerun kept the legacy broad kill\n' >&2

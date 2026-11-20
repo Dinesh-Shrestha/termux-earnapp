@@ -1284,7 +1284,11 @@ sweep_earnapp() {
 sweep_earnapp
 termux-wake-lock
 
-rm -f "\${PREFIX:-/data/data/com.termux/files/usr}/var/lib/earnapp-setup/earnapp.children" 2>/dev/null || true
+rm -f "\${PREFIX:-/data/data/com.termux/files/usr}/var/lib/earnapp/earnapp.children" 2>/dev/null || true
+# Remove the pre-migration snapshot. Keep the legacy directory name separate so
+# this cleanup is not mistaken for a live reference to the old state file.
+legacy_state_dir="\${PREFIX:-/data/data/com.termux/files/usr}/var/lib/earnapp-setup"
+rm -f "\$legacy_state_dir/earnapp.children" 2>/dev/null || true
 
 exec udocker run \\
   -v "\$PREFIX/etc/resolv.conf:/etc/resolv.conf" \\
@@ -1298,7 +1302,7 @@ EOF
 # other services share the same udocker/proot processes and the same runsvdir.
 PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
 service_dir="$PREFIX/var/service/earnapp"
-state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+state_file="$PREFIX/var/lib/earnapp/earnapp.children"
 
 parent_of() {
   awk 'sub(/^[^)]*\) /, "") { print $2 }' "/proc/$1/stat" 2>/dev/null
@@ -1367,7 +1371,7 @@ EOF
   cat > "$dir/finish" <<'EOF' || die "write $dir/finish failed"
 #!/data/data/com.termux/files/usr/bin/sh
 PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
-state_file="$PREFIX/var/lib/earnapp-setup/earnapp.children"
+state_file="$PREFIX/var/lib/earnapp/earnapp.children"
 
 parent_of() {
   awk 'sub(/^[^)]*\) /, "") { print $2 }' "/proc/$1/stat" 2>/dev/null
@@ -1446,6 +1450,7 @@ setup_earnapp() {
   ensure_exec_mode
   EARNAPP_LOGGER_REPAIRED=0
   write_service "$uuid" || die "earnapp service files failed"
+  finalize_service_repair_migration
   ensure_service earnapp
   if [ "$EARNAPP_LOGGER_REPAIRED" -eq 1 ]; then
     service_dir=$(svc_dir)
