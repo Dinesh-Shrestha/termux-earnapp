@@ -2157,7 +2157,7 @@ write_repair_helper() {
 write_repair_prefix() {
   rm -rf "$REPAIR_PREFIX"
   mkdir -p "$REPAIR_PREFIX/var/service" \
-           "$REPAIR_PREFIX/var/lib/earnapp-setup" \
+           "$REPAIR_PREFIX/var/lib/service-repair" \
            "$REPAIR_PREFIX/var/log" \
            "$REPAIR_PREFIX/tmp"
   : > "$REPAIR_PREFIX/var/log/service-repair.log"
@@ -2179,21 +2179,21 @@ mkdir -p "$REPAIR_PREFIX/var/service/sshd" \
 out=$(run_helper snapshot 2>&1); rc=$?
 check_eq "helper snapshot exits 0" "0" "$rc"
 check_eq "helper snapshot records only enabled services" "cloudflared
-sshd" "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" 2>/dev/null)"
+sshd" "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services" 2>/dev/null)"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/cloudflared" "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\nstale-svc\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\nstale-svc\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 out=$(run_helper snapshot 2>&1); rc=$?
 check_eq "helper snapshot unions prior pending names" "sshd
 stale-svc
-cloudflared" "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services")"
+cloudflared" "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services")"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/bad name" "$REPAIR_PREFIX/var/service/-dash"
 out=$(run_helper snapshot 2>&1); rc=$?
-if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
+if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/service-repair/pending-services" ]; then
   pass=$((pass + 1)); printf 'PASS  helper snapshot ignores malformed names and writes nothing when empty\n'
 else
   fail=$((fail + 1)); printf 'FAIL  helper snapshot empty/malformed (rc=%s)\n%s\n' "$rc" "$out" >&2
@@ -2202,13 +2202,13 @@ fi
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd" "$REPAIR_PREFIX/var/service/cloudflared"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\ncloudflared\ngone-svc\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\ncloudflared\ngone-svc\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 out=$(run_helper repair 2>&1); rc=$?
 check_eq "helper repair exits 0" "0" "$rc"
 check_eq "helper repair enables only down services" "sshd" "$(cat "$REPAIR_STUB/enabled" 2>/dev/null)"
 check "helper repair drops missing directories" "$(cat "$REPAIR_PREFIX/var/log/service-repair.log")" "[post] dropped gone-svc (service directory missing)"
 check "helper repair logs the repair" "$(cat "$REPAIR_PREFIX/var/log/service-repair.log")" "[post] repaired sshd (down reappeared)"
-if [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
+if [ ! -e "$REPAIR_PREFIX/var/lib/service-repair/pending-services" ]; then
   pass=$((pass + 1)); printf 'PASS  helper repair removes the empty pending file\n'
 else
   fail=$((fail + 1)); printf 'FAIL  helper repair left pending state\n' >&2
@@ -2217,18 +2217,18 @@ fi
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 export REPAIR_STUB_KEEP_DOWN=1 REPAIR_STUB_RC=1
 out=$(run_helper repair 2>&1); rc=$?
 unset REPAIR_STUB_KEEP_DOWN REPAIR_STUB_RC
 check_eq "helper repair stays successful when sv-enable fails" "0" "$rc"
-check_eq "helper repair retains unresolved names" "sshd" "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services")"
+check_eq "helper repair retains unresolved names" "sshd" "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services")"
 check "helper repair logs retention" "$(cat "$REPAIR_PREFIX/var/log/service-repair.log")" "[post] retained sshd (down still present)"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 out=$(run_helper repair 2>&1); rc=$?
 check_eq "stale pending re-enables a manual disable (accepted ambiguity)" "sshd" \
   "$(cat "$REPAIR_STUB/enabled" 2>/dev/null)"
@@ -2236,10 +2236,10 @@ check_eq "stale pending re-enables a manual disable (accepted ambiguity)" "sshd"
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 rm -rf "$REPAIR_PREFIX/var/service"
 out=$(run_helper repair 2>&1); rc=$?
-check_eq "helper repair preserves pending when SVDIR is missing" "sshd" "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services")"
+check_eq "helper repair preserves pending when SVDIR is missing" "sshd" "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services")"
 check "helper repair logs the preserved pending" "$(cat "$REPAIR_PREFIX/var/log/service-repair.log")" "[post] pending kept (SVDIR missing)"
 
 write_repair_prefix
@@ -2253,7 +2253,7 @@ fi
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 out=$(run_helper boot 2>&1); rc=$?
 check_eq "helper boot repairs pending state" "sshd" "$(cat "$REPAIR_STUB/enabled" 2>/dev/null)"
 check "helper boot tags log lines" "$(cat "$REPAIR_PREFIX/var/log/service-repair.log")" "[boot] repaired sshd (down reappeared)"
@@ -2263,14 +2263,14 @@ check_eq "helper unknown subcommand exits 0" "0" "$rc"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
 mv "$REPAIR_STUB/sv-enable" "$REPAIR_ROOT/sv-enable.off"
 out=$(run_helper repair 2>&1); rc=$?
 mv "$REPAIR_ROOT/sv-enable.off" "$REPAIR_STUB/sv-enable"
 check_eq "helper repair without sv-enable exits 0" "0" "$rc"
 if [ ! -e "$REPAIR_PREFIX/var/service/sshd/down" ] \
-   && [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
+   && [ ! -e "$REPAIR_PREFIX/var/lib/service-repair/pending-services" ]; then
   pass=$((pass + 1)); printf 'PASS  helper repair removes down without sv-enable\n'
 else
   fail=$((fail + 1)); printf 'FAIL  helper repair fallback without sv-enable\n' >&2
@@ -2278,18 +2278,19 @@ fi
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
-rm -rf "$REPAIR_PREFIX/var/lib/earnapp-setup"
-: > "$REPAIR_PREFIX/var/lib/earnapp-setup"
+rm -rf "$REPAIR_PREFIX/var/lib/service-repair"
+: > "$REPAIR_PREFIX/var/lib/service-repair"
 out=$(run_helper snapshot 2>&1); rc=$?
 check_eq "helper snapshot exits 0 with unwritable state" "0" "$rc"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
-cp "$REPAIR_HELPER" "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh"
+mkdir -p "$REPAIR_PREFIX/var/lib/service-repair"
+cp "$REPAIR_HELPER" "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh"
 out=$(env -u PREFIX PATH="$REPAIR_STUB:/usr/bin:/bin" REPAIR_TEST_DIR="$REPAIR_STUB" \
-  sh "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh" snapshot 2>&1); rc=$?
+  sh "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh" snapshot 2>&1); rc=$?
 check_eq "helper derives PREFIX from its installed path" "sshd" \
-  "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" 2>/dev/null)"
+  "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services" 2>/dev/null)"
 check_eq "helper prefix derivation exits 0" "0" "$rc"
 
 write_repair_prefix
@@ -2308,17 +2309,17 @@ check "helper log uses UTC Z timestamps" "$(tail -n 1 "$REPAIR_PREFIX/var/log/se
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
-before=$(cksum < "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services")
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
+before=$(cksum < "$REPAIR_PREFIX/var/lib/service-repair/pending-services")
 out=$(run_helper status 2>&1); rc=$?
-after=$(cksum < "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services")
+after=$(cksum < "$REPAIR_PREFIX/var/lib/service-repair/pending-services")
 check_eq "helper status exits 0" "0" "$rc"
 check "helper status reports pending services" "$out" "sshd"
 check_eq "helper status is read-only" "$before" "$after"
 
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 out=$(run_helper repair 2>&1)
 if grep -Eq 'sdk-node-[0-9a-f]{32}' "$REPAIR_PREFIX/var/log/service-repair.log"; then
   fail=$((fail + 1)); printf 'FAIL  helper log leaked a UUID\n' >&2
@@ -2334,22 +2335,22 @@ DRY_RUN=1
 PREFIX="$REPAIR_PREFIX"
 out=$(write_service_repair_helper 2>&1); rc=$?
 check_eq "helper writer dry run exits 0" "0" "$rc"
-check "helper writer dry run logs the write" "$out" "[write] $REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh"
-if [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh" ]; then
+check "helper writer dry run logs the write" "$out" "[write] $REPAIR_PREFIX/var/lib/service-repair/service-repair.sh"
+if [ ! -e "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh" ]; then
   pass=$((pass + 1)); printf 'PASS  helper writer dry run writes nothing\n'
 else
   fail=$((fail + 1)); printf 'FAIL  helper writer dry run wrote a file\n' >&2
 fi
 DRY_RUN=0
 out=$(write_service_repair_helper 2>&1); rc=$?
-if [ "$rc" -eq 0 ] && [ -x "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh" ]; then
+if [ "$rc" -eq 0 ] && [ -x "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh" ]; then
   pass=$((pass + 1)); printf 'PASS  helper writer installs an executable helper\n'
 else
   fail=$((fail + 1)); printf 'FAIL  helper writer install (rc=%s)\n%s\n' "$rc" "$out" >&2
 fi
-if [ -f "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh" ]; then
+if [ -f "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh" ]; then
   check_eq "helper writer installs the embedded content" "${SERVICE_REPAIR_HOOK:-}" \
-    "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh")"
+    "$(cat "$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh")"
 else
   fail=$((fail + 1)); printf 'FAIL  helper writer did not create the helper file\n' >&2
 fi
@@ -2369,7 +2370,7 @@ if command -v dash >/dev/null 2>&1; then
   if dash -n "$REPAIR_HELPER" \
      && PATH="$REPAIR_STUB:/usr/bin:/bin" PREFIX="$REPAIR_PREFIX" \
         REPAIR_TEST_DIR="$REPAIR_STUB" dash "$REPAIR_HELPER" snapshot \
-     && [ "$(cat "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" 2>/dev/null)" = "sshd" ]; then
+     && [ "$(cat "$REPAIR_PREFIX/var/lib/service-repair/pending-services" 2>/dev/null)" = "sshd" ]; then
     pass=$((pass + 1)); printf 'PASS  helper passes dash syntax and snapshot\n'
   else
     fail=$((fail + 1)); printf 'FAIL  helper dash compatibility\n' >&2
@@ -2392,8 +2393,8 @@ case "$mode" in
     exit 0 ;;
   fail-final)
     case " \$* " in *" -c "*) exit 0 ;; esac
-    if [ -f "\${PREFIX:?}/etc/apt/apt.conf.d/earnapp-service-repair" ] &&
-       grep -q "DPkg::Pre-Invoke" "\$PREFIX/etc/apt/apt.conf.d/earnapp-service-repair"; then
+    if [ -f "\${PREFIX:?}/etc/apt/apt.conf.d/service-repair" ] &&
+       grep -q "DPkg::Pre-Invoke" "\$PREFIX/etc/apt/apt.conf.d/service-repair"; then
       exit 1
     fi
     exit 0 ;;
@@ -2404,8 +2405,8 @@ SH
 }
 
 APT_T="$(mktemp -d)"
-REPAIR_CONF="$REPAIR_PREFIX/etc/apt/apt.conf.d/earnapp-service-repair"
-REPAIR_INSTALLED="$REPAIR_PREFIX/var/lib/earnapp-setup/service-repair.sh"
+REPAIR_CONF="$REPAIR_PREFIX/etc/apt/apt.conf.d/service-repair"
+REPAIR_INSTALLED="$REPAIR_PREFIX/var/lib/service-repair/service-repair.sh"
 _repair_saved_prefix=${PREFIX:-}
 _repair_saved_dry=$DRY_RUN
 PREFIX="$REPAIR_PREFIX"
@@ -2503,6 +2504,79 @@ PREFIX="$_repair_saved_prefix"
 DRY_RUN="$_repair_saved_dry"
 unset APT_TEST_DIR
 
+# Legacy hook, pending state, helper, and children migrate in one call.
+write_apt_config_stub "$APT_T" ok
+write_legacy_repair_prefix() {
+  local dir=$1 helper="$1/var/lib/earnapp-setup/service-repair.sh"
+  mkdir -p "$dir/etc/apt/apt.conf.d" "$dir/var/lib/earnapp-setup"
+  printf '#!/bin/sh\nexit 0\n' > "$helper"
+  service_repair_hook_lines "$helper" > "$dir/etc/apt/apt.conf.d/earnapp-service-repair"
+  printf 'sshd\ncloudflared\n' > "$dir/var/lib/earnapp-setup/pending-services"
+  printf '123\n' > "$dir/var/lib/earnapp-setup/earnapp.children"
+}
+APT_TEST_DIR="$APT_T"
+export APT_TEST_DIR
+
+_repair_migrate_prefix="$(mktemp -d)"
+_repair_migrate_home="$(mktemp -d)"
+write_legacy_repair_prefix "$_repair_migrate_prefix"
+out=$(HOME="$_repair_migrate_home" PREFIX="$_repair_migrate_prefix" \
+  PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "legacy migration exits 0" "0" "$rc"
+check_eq "legacy hook removed" "no" \
+  "$([ -e "$_repair_migrate_prefix/etc/apt/apt.conf.d/earnapp-service-repair" ] && echo yes || echo no)"
+check_eq "legacy helper removed" "no" \
+  "$([ -e "$_repair_migrate_prefix/var/lib/earnapp-setup/service-repair.sh" ] && echo yes || echo no)"
+check "new helper written" \
+  "$(cat "$_repair_migrate_prefix/var/lib/service-repair/service-repair.sh" 2>/dev/null)" \
+  "repair)"
+check_eq "legacy pending merged" "sshd
+cloudflared" "$(cat "$_repair_migrate_prefix/var/lib/service-repair/pending-services" 2>/dev/null)"
+check_eq "legacy children removed" "no" \
+  "$([ -e "$_repair_migrate_prefix/var/lib/earnapp-setup/earnapp.children" ] && echo yes || echo no)"
+check_eq "empty legacy directory removed" "no" \
+  "$([ -d "$_repair_migrate_prefix/var/lib/earnapp-setup" ] && echo yes || echo no)"
+rm -rf "$_repair_migrate_prefix" "$_repair_migrate_home"
+
+# An edited hook is user-owned: keep it and the helper it references.
+_repair_edited_prefix="$(mktemp -d)"
+_repair_edited_home="$(mktemp -d)"
+write_legacy_repair_prefix "$_repair_edited_prefix"
+printf 'custom hook\n' > "$_repair_edited_prefix/etc/apt/apt.conf.d/earnapp-service-repair"
+out=$(HOME="$_repair_edited_home" PREFIX="$_repair_edited_prefix" \
+  PATH="$APT_T:/usr/bin:/bin" ensure_service_repair 2>&1); rc=$?
+check_eq "edited legacy hook exits 0" "0" "$rc"
+check "edited legacy hook is left unchanged" "$out" "was edited"
+check_eq "edited legacy hook file kept" "yes" \
+  "$([ -f "$_repair_edited_prefix/etc/apt/apt.conf.d/earnapp-service-repair" ] && echo yes || echo no)"
+check_eq "helper kept for the edited hook" "yes" \
+  "$([ -f "$_repair_edited_prefix/var/lib/earnapp-setup/service-repair.sh" ] && echo yes || echo no)"
+rm -rf "$_repair_edited_prefix" "$_repair_edited_home"
+
+# Dry run reports the plan without writing the new helper.
+_repair_dry_prefix="$(mktemp -d)"
+_repair_dry_home="$(mktemp -d)"
+write_legacy_repair_prefix "$_repair_dry_prefix"
+_dry_out=$(HOME="$_repair_dry_home" PREFIX="$_repair_dry_prefix" \
+  PATH="$REPAIR_ROOT/none:/usr/bin:/bin" DRY_RUN=1 ensure_service_repair 2>&1); rc=$?
+check_eq "dry run exits 0" "0" "$rc"
+check "dry run plans the helper write" "$_dry_out" \
+  "[write] $_repair_dry_prefix/var/lib/service-repair/service-repair.sh"
+check "dry run plans the hook write" "$_dry_out" \
+  "[write] $_repair_dry_prefix/etc/apt/apt.conf.d/service-repair"
+check "dry run plans the pending merge" "$_dry_out" \
+  "[merge] $_repair_dry_prefix/var/lib/earnapp-setup/pending-services"
+check "dry run plans the legacy hook removal" "$_dry_out" \
+  "[remove] $_repair_dry_prefix/etc/apt/apt.conf.d/earnapp-service-repair"
+check "dry run plans the legacy helper removal" "$_dry_out" \
+  "[remove] $_repair_dry_prefix/var/lib/earnapp-setup/service-repair.sh"
+check_eq "dry run writes nothing" "no" \
+  "$([ -e "$_repair_dry_prefix/var/lib/service-repair/service-repair.sh" ] && echo yes || echo no)"
+check_eq "dry run keeps the legacy hook" "yes" \
+  "$([ -f "$_repair_dry_prefix/etc/apt/apt.conf.d/earnapp-service-repair" ] && echo yes || echo no)"
+rm -rf "$_repair_dry_prefix" "$_repair_dry_home"
+unset APT_TEST_DIR
+
 reset_state
 DRY_RUN=1
 REQUESTED=(base)
@@ -2525,7 +2599,7 @@ write_repair_prefix
 _repair_order="$(mktemp -d)"
 cat > "$_repair_order/pkg" <<'SH'
 #!/usr/bin/env bash
-[ -f "${PREFIX:?}/etc/apt/apt.conf.d/earnapp-service-repair" ] && printf 'conf-present\n' >> "$ORDER_DIR/calls"
+[ -f "${PREFIX:?}/etc/apt/apt.conf.d/service-repair" ] && printf 'conf-present\n' >> "$ORDER_DIR/calls"
 printf 'pkg %s\n' "$*" >> "$ORDER_DIR/calls"
 exit 0
 SH
@@ -2561,7 +2635,7 @@ DRY_RUN=0
 write_repair_prefix
 mkdir -p "$REPAIR_PREFIX/var/service/sshd" "$REPAIR_PREFIX/etc/profile.d"
 : > "$REPAIR_PREFIX/var/service/sshd/down"
-printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services"
+printf 'sshd\n' > "$REPAIR_PREFIX/var/lib/service-repair/pending-services"
 _repair_marker="$REPAIR_PREFIX/supervisor.started"
 _repair_hook_marker="$REPAIR_PREFIX/hook.sourced"
 cat > "$REPAIR_PREFIX/etc/profile.d/start-services.sh" <<SH
@@ -2598,7 +2672,7 @@ check_eq "boot repairs pending state after starting the supervisor" "after-super
   "$(cat "$_repair_boot_stub/calls" 2>/dev/null)"
 check_eq "boot starts the supervisor without sourcing the profile hook" "no" \
   "$([ -e "$_repair_hook_marker" ] && echo yes || echo no)"
-if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/earnapp-setup/pending-services" ]; then
+if [ "$rc" -eq 0 ] && [ ! -e "$REPAIR_PREFIX/var/lib/service-repair/pending-services" ]; then
   pass=$((pass + 1)); printf 'PASS  boot clears repaired pending state\n'
 else
   fail=$((fail + 1)); printf 'FAIL  boot pending repair (rc=%s)\n%s\n' "$rc" "$out" >&2

@@ -321,10 +321,12 @@ else
   printf "no %s outage in %ss\n" "$svc" "$((i * step))" >> "$wlog"
 fi'
 
+# The helper text below is shared with termux-passive-income-manager and must
+# stay byte-identical with the copy in that repository.
 SERVICE_REPAIR_HOOK='#!/data/data/com.termux/files/usr/bin/sh
 trap "" HUP 2>/dev/null || :
 case "$0" in
-  */var/lib/earnapp-setup/service-repair.sh) derived_prefix=${0%/var/lib/earnapp-setup/service-repair.sh} ;;
+  */var/lib/service-repair/service-repair.sh) derived_prefix=${0%/var/lib/service-repair/service-repair.sh} ;;
   *) derived_prefix="" ;;
 esac
 PREFIX=${PREFIX:-$derived_prefix}
@@ -333,7 +335,7 @@ PATH="$PREFIX/bin:$PATH"
 export PATH
 SVDIR="$PREFIX/var/service"
 export SVDIR
-state_dir="$PREFIX/var/lib/earnapp-setup"
+state_dir="$PREFIX/var/lib/service-repair"
 pending="$state_dir/pending-services"
 log_file="$PREFIX/var/log/service-repair.log"
 
@@ -476,35 +478,170 @@ esac
 exit 0'
 
 write_service_repair_helper() {
-  local dir="${PREFIX:-}/var/lib/earnapp-setup"
-  local target="$dir/service-repair.sh"
-  local tmp="$target.tmp.$$"
+  local target dir tmp
+  target=$(service_repair_helper_path)
+  dir=$(dirname "$target")
   if [ "$DRY_RUN" -eq 1 ]; then
     log INFO "[write] $target"
     return 0
   fi
   mkdir -p "$dir" "${PREFIX:-}/var/log" || die "failed to create service-repair state directories"
   if [ -f "$target" ] && [ "$(cat "$target")" = "$SERVICE_REPAIR_HOOK" ]; then
+    chmod 755 "$target" 2>/dev/null || true
     return 0
   fi
+  tmp="$target.tmp.$$"
   printf '%s\n' "$SERVICE_REPAIR_HOOK" > "$tmp" || die "failed to write $tmp"
   sh -n "$tmp" || { rm -f "$tmp"; die "service-repair helper failed the POSIX shell syntax check"; }
-  chmod +x "$tmp" || { rm -f "$tmp"; die "failed to set the service-repair helper executable"; }
+  chmod 755 "$tmp" || { rm -f "$tmp"; die "failed to set the service-repair helper executable"; }
   mv -f "$tmp" "$target" || { rm -f "$tmp"; die "failed to install $target"; }
 }
 
+service_repair_state_dir() {
+  printf '%s/var/lib/service-repair\n' "${PREFIX:-}"
+}
+
+service_repair_helper_path() {
+  printf '%s/service-repair.sh\n' "$(service_repair_state_dir)"
+}
+
+service_repair_hook_path() {
+  printf '%s/etc/apt/apt.conf.d/service-repair\n' "${PREFIX:-}"
+}
+
+service_repair_hook_lines() {
+  local helper=$1
+  printf "DPkg::Pre-Invoke { \"trap '' HUP; %s snapshot || true\"; };\n" "$helper"
+  printf "DPkg::Post-Invoke { \"trap '' HUP; %s repair || true\"; };\n" "$helper"
+}
+
+legacy_service_repair_helper_path() {
+  printf '%s/var/lib/earnapp-setup/service-repair.sh\n' "${PREFIX:-}"
+}
+
+legacy_service_repair_hook_path() {
+  printf '%s/etc/apt/apt.conf.d/earnapp-service-repair\n' "${PREFIX:-}"
+}
+
+legacy_service_repair_pending_path() {
+  printf '%s/var/lib/earnapp-setup/pending-services\n' "${PREFIX:-}"
+}
+
+legacy_earnapp_children_path() {
+  printf '%s/var/lib/earnapp-setup/earnapp.children\n' "${PREFIX:-}"
+}
+
+merge_service_repair_pending() {
+  local old new dir tmp
+  old=$(legacy_service_repair_pending_path)
+  [ -f "$old" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log INFO "[merge] $old"
+    log INFO "[remove] $old"
+    return 0
+  fi
+  new="$(service_repair_state_dir)/pending-services"
+  dir=$(dirname "$new")
+  mkdir -p "$dir" || die "failed to create directory $dir"
+  tmp="$new.tmp.$$"
+  if [ -f "$new" ]; then
+    awk 'NF && !seen[$0]++' "$new" "$old" > "$tmp" || {
+      rm -f "$tmp"
+      die "failed to merge pending services into $tmp"
+    }
+  else
+    awk 'NF && !seen[$0]++' "$old" > "$tmp" || {
+      rm -f "$tmp"
+      die "failed to merge pending services into $tmp"
+    }
+  fi
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$new" || { rm -f "$tmp"; die "failed to install $new"; }
+  rm -f "$old"
+}
+
+remove_legacy_service_repair_hook() {
+  local old_hook expected
+  old_hook=$(legacy_service_repair_hook_path)
+  [ -f "$old_hook" ] || return 0
+  expected=$(service_repair_hook_lines "$(legacy_service_repair_helper_path)")
+  if [ "$(cat "$old_hook")" = "$expected" ]; then
+    log INFO "[remove] $old_hook"
+    [ "$DRY_RUN" -eq 1 ] || rm -f "$old_hook"
+  else
+    log WARN "Legacy APT service-repair hook was edited; leaving $old_hook unchanged"
+  fi
+}
+
+legacy_service_repair_helper_referenced() {
+  local old_hook script expected
+  old_hook=$(legacy_service_repair_hook_path)
+  if [ -f "$old_hook" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      expected=$(service_repair_hook_lines "$(legacy_service_repair_helper_path)")
+      [ "$(cat "$old_hook")" != "$expected" ] && return 0
+    else
+      return 0
+    fi
+  fi
+  script=$(boot_script)
+  if [ -f "$script" ] && grep -Fq 'earnapp-setup/service-repair.sh boot' "$script" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+legacy_earnapp_children_referenced() {
+  local f
+  for f in "${PREFIX:-}/var/service/earnapp/run" \
+           "${PREFIX:-}/var/service/earnapp/finish" \
+           "${PREFIX:-}/var/service/earnapp/control/t"; do
+    if [ -f "$f" ] && grep -Fq 'var/lib/earnapp-setup/earnapp.children' "$f" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+finalize_service_repair_migration() {
+  local old_helper old_children old_dir
+  old_helper=$(legacy_service_repair_helper_path)
+  old_children=$(legacy_earnapp_children_path)
+  old_dir=$(dirname "$old_helper")
+  if [ -f "$old_helper" ]; then
+    if legacy_service_repair_helper_referenced; then
+      log INFO "[keep] $old_helper (still referenced)"
+    else
+      log INFO "[remove] $old_helper"
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$old_helper"
+    fi
+  fi
+  if [ -f "$old_children" ]; then
+    if legacy_earnapp_children_referenced; then
+      log INFO "[keep] $old_children (still referenced)"
+    else
+      log INFO "[remove] $old_children"
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$old_children"
+    fi
+  fi
+  [ "$DRY_RUN" -eq 1 ] || rmdir "$old_dir" 2>/dev/null || true
+}
+
 ensure_service_repair() {
-  local helper="${PREFIX:-}/var/lib/earnapp-setup/service-repair.sh"
-  local conf_dir="${PREFIX:-}/etc/apt/apt.conf.d"
-  local conf="$conf_dir/earnapp-service-repair"
-  local stage="${PREFIX:-}/etc/apt"
-  local candidate="$stage/earnapp-service-repair.candidate"
-  local backup="$stage/earnapp-service-repair.prev"
-  local pre post desired
+  local helper conf_dir conf stage candidate backup pre post desired
+  helper=$(service_repair_helper_path)
+  conf_dir=$(dirname "$(service_repair_hook_path)")
+  conf=$(service_repair_hook_path)
+  stage=$(dirname "$conf_dir")
+  candidate="$stage/service-repair.candidate"
+  backup="$stage/service-repair.prev"
   if [ "$DRY_RUN" -eq 1 ]; then
     log INFO "[run] apt-config dump"
     write_service_repair_helper
+    merge_service_repair_pending
     log INFO "[write] $conf"
+    remove_legacy_service_repair_hook
+    finalize_service_repair_migration
     return 0
   fi
   command -v apt-config >/dev/null 2>&1 ||
@@ -512,32 +649,35 @@ ensure_service_repair() {
   apt-config dump >/dev/null 2>&1 ||
     die "existing APT configuration fails to parse; not modifying it"
   write_service_repair_helper
-  pre="DPkg::Pre-Invoke { \"trap '' HUP; $helper snapshot || true\"; };"
-  post="DPkg::Post-Invoke { \"trap '' HUP; $helper repair || true\"; };"
+  merge_service_repair_pending
+  pre=$(service_repair_hook_lines "$helper" | head -n 1)
+  post=$(service_repair_hook_lines "$helper" | tail -n 1)
   desired=$(printf '%s\n%s\n' "$pre" "$post")
   if [ -f "$conf" ] && [ "$(cat "$conf")" = "$desired" ]; then
     log INFO "APT service-repair hooks already configured"
-    return 0
-  fi
-  mkdir -p "$conf_dir" || die "failed to create $conf_dir"
-  rm -f "$candidate"
-  printf '%s\n%s\n' "$pre" "$post" > "$candidate" || die "failed to stage $candidate"
-  apt-config -c "$candidate" dump >/dev/null 2>&1 || {
-    rm -f "$candidate"
-    die "apt-config rejected the staged service-repair fragment"
-  }
-  if [ -f "$conf" ]; then
-    cp -f "$conf" "$backup" || die "failed to back up $conf"
   else
+    mkdir -p "$conf_dir" || die "failed to create $conf_dir"
+    rm -f "$candidate"
+    printf '%s\n%s\n' "$pre" "$post" > "$candidate" || die "failed to stage $candidate"
+    apt-config -c "$candidate" dump >/dev/null 2>&1 || {
+      rm -f "$candidate"
+      die "apt-config rejected the staged service-repair fragment"
+    }
+    if [ -f "$conf" ]; then
+      cp -f "$conf" "$backup" || die "failed to back up $conf"
+    else
+      rm -f "$backup"
+    fi
+    mv -f "$candidate" "$conf" || die "failed to activate $conf"
+    if ! apt-config dump >/dev/null 2>&1; then
+      if [ -f "$backup" ]; then mv -f "$backup" "$conf"; else rm -f "$conf"; fi
+      die "APT configuration failed validation after installing the service-repair hooks; previous state restored"
+    fi
     rm -f "$backup"
+    log INFO "APT service-repair hooks installed"
   fi
-  mv -f "$candidate" "$conf" || die "failed to activate $conf"
-  if ! apt-config dump >/dev/null 2>&1; then
-    if [ -f "$backup" ]; then mv -f "$backup" "$conf"; else rm -f "$conf"; fi
-    die "APT configuration failed validation after installing the service-repair hooks; previous state restored"
-  fi
-  rm -f "$backup"
-  log INFO "APT service-repair hooks installed"
+  remove_legacy_service_repair_hook
+  finalize_service_repair_migration
 }
 
 setup_base() {
@@ -711,7 +851,7 @@ setup_boot() {
   ensure_service_repair
   start_termux_services
   ensure_wake_lock
-  step sh "${PREFIX:-}/var/lib/earnapp-setup/service-repair.sh" repair || true
+  step sh "$(service_repair_helper_path)" repair || true
   script=$(boot_script)
   if [ -f "$script" ] && boot_script_configured "$script"; then
     log INFO "Termux:Boot start-services script already configured"
