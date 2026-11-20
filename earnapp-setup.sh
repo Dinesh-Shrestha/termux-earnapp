@@ -744,7 +744,7 @@ write_start_services() {
 
 termux-wake-lock
 . "$PREFIX/etc/profile.d/start-services.sh"
-/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true
+/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true
 EOF
 }
 
@@ -844,8 +844,30 @@ append_boot_line() {
   printf '%s\n' "$line" >> "$script" || die "failed to append to $script"
 }
 
+migrate_boot_repair_path() {
+  local script=$1 tmp new_present=0
+  [ -f "$script" ] || return 0
+  grep -Fq 'start-services.sh' "$script" || return 0
+  grep -Fq 'earnapp-setup/service-repair.sh boot' "$script" || return 0
+  grep -Fq 'service-repair/service-repair.sh boot' "$script" && new_present=1
+  log INFO "[update] $script"
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  tmp="$script.tmp.$$"
+  cp -p "$script" "$tmp" || die "failed to stage $script for migration"
+  awk -v new_present="$new_present" '
+    /earnapp-setup\/service-repair\.sh boot/ {
+      if (new_present) next
+      sub(/var\/lib\/earnapp-setup\/service-repair\.sh/,
+          "var/lib/service-repair/service-repair.sh")
+      new_present=1
+    }
+    { print }
+  ' "$script" > "$tmp" || { rm -f "$tmp"; die "failed to migrate $script"; }
+  mv -f "$tmp" "$script" || { rm -f "$tmp"; die "failed to install migrated $script"; }
+}
+
 setup_boot() {
-  local script created=0
+  local script created=0 append_line
   log INFO "Boot: ensuring termux-services and configuring Termux:Boot"
   ensure_pkg sv-enable termux-services
   ensure_service_repair
@@ -853,11 +875,15 @@ setup_boot() {
   ensure_wake_lock
   step sh "$(service_repair_helper_path)" repair || true
   script=$(boot_script)
+  append_line='/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true'
+  if [ -f "$script" ] && grep -Fq 'start-services.sh' "$script"; then
+    migrate_boot_repair_path "$script" || return 1
+  fi
   if [ -f "$script" ] && boot_script_configured "$script"; then
     log INFO "Termux:Boot start-services script already configured"
   elif [ -f "$script" ] && grep -Fq 'start-services.sh' "$script"; then
     append_boot_line "$script" 'termux-wake-lock' 'termux-wake-lock'
-    append_boot_line "$script" 'service-repair.sh boot' '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true'
+    append_boot_line "$script" 'service-repair/service-repair.sh boot' "$append_line"
   elif [ -f "$script" ] && [ "$DRY_RUN" -eq 0 ]; then
     if [ "$FLAG_YES" -eq 0 ] && ask_yn "start-services already exists. Replace it?" n; then
       write_start_services
@@ -869,6 +895,7 @@ setup_boot() {
     write_start_services
     created=1
   fi
+  finalize_service_repair_migration
   if [ ! -x "$script" ]; then
     step chmod +x "$script"
   fi
@@ -881,7 +908,7 @@ boot_script_configured() {
   local script=${1:-$(boot_script)}
   [ -f "$script" ] && grep -Fq 'start-services.sh' "$script" \
     && grep -Fq 'termux-wake-lock' "$script" \
-    && grep -Fq 'service-repair.sh boot' "$script"
+    && grep -Fq 'service-repair/service-repair.sh boot' "$script"
 }
 
 setup_recovery() {

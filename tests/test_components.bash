@@ -257,7 +257,7 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR4="$(mktemp -d)"
 for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR4/$tool"
@@ -876,7 +876,7 @@ reset_state
 MOCKDIR3="$(mktemp -d)"
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 for tool in udocker sv-enable sshd cloudflared speedtest-go; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR3/$tool"
   chmod +x "$MOCKDIR3/$tool"
@@ -1894,7 +1894,7 @@ reset_state
 DRY_RUN=1
 _wd_home="$(mktemp -d)"
 mkdir -p "$_wd_home/.termux/boot"
-printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
+printf '. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true\n' > "$_wd_home/.termux/boot/start-services"
 MOCKDIR17="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCKDIR17/sv-enable"
 chmod +x "$MOCKDIR17/sv-enable"
@@ -2688,7 +2688,40 @@ boot_script_configured "$_repair_one"; rc=$?
 check_eq "boot script without a wake lock is not configured" "1" "$rc"
 printf 'termux-wake-lock\n' >> "$_repair_one"
 boot_script_configured "$_repair_one"; rc=$?
-check_eq "three-marker boot script is configured" "0" "$rc"
+check_eq "legacy repair path is not configured" "1" "$rc"
+printf '/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true\n' >> "$_repair_one"
+boot_script_configured "$_repair_one"; rc=$?
+check_eq "boot script with the new repair path is configured" "0" "$rc"
+
+# A legacy literal boot line is migrated in place by a boot-including run.
+reset_state
+DRY_RUN=0
+write_repair_prefix
+mkdir -p "$REPAIR_PREFIX/etc/profile.d"
+printf ':\n' > "$REPAIR_PREFIX/etc/profile.d/start-services.sh"
+_boot_mig_prefix="$(mktemp -d)"
+_boot_mig_home="$(mktemp -d)"
+mkdir -p "$_boot_mig_prefix/etc/profile.d" "$_boot_mig_home/.termux/boot"
+: > "$_boot_mig_prefix/etc/profile.d/start-services.sh"
+write_legacy_repair_prefix "$_boot_mig_prefix"
+_boot_mig_script="$_boot_mig_home/.termux/boot/start-services"
+printf '#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\n. "$PREFIX/etc/profile.d/start-services.sh"\n/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true\n' \
+  > "$_boot_mig_script"
+chmod 750 "$_boot_mig_script"
+HOME="$_boot_mig_home" PREFIX="$_boot_mig_prefix" PATH="$_repair_boot_stub:/usr/bin:/bin" \
+  ensure_service_repair >/dev/null 2>&1
+out=$(HOME="$_boot_mig_home" PREFIX="$_boot_mig_prefix" PATH="$_repair_boot_stub:/usr/bin:/bin" \
+  setup_boot </dev/null 2>&1); rc=$?
+check "boot line migrated to the literal new path" \
+  "$(cat "$_boot_mig_script")" \
+  "/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true"
+check_eq "old boot line removed" "0" \
+  "$(grep -c 'earnapp-setup/service-repair.sh boot' "$_boot_mig_script")"
+check "boot migration logs the update" "$out" "[update] $_boot_mig_script"
+check_eq "boot run finishes legacy helper cleanup" "no" \
+  "$([ -e "$_boot_mig_prefix/var/lib/earnapp-setup/service-repair.sh" ] && echo yes || echo no)"
+check_eq "boot migration exits 0" "0" "$rc"
+rm -rf "$_boot_mig_prefix" "$_boot_mig_home"
 
 reset_state
 DRY_RUN=0
@@ -2734,7 +2767,7 @@ out=$(HOME="$_repair_home" PATH="$_repair_boot_stub:/usr/bin:/bin" setup_boot </
 check_eq "migration keeps a complete start-services line without a trailing newline" "1" \
   "$(grep -cxF '. "$PREFIX/etc/profile.d/start-services.sh"' "$_repair_script")"
 check_eq "migration appends the repair line once without a trailing newline" "1" \
-  "$(grep -cxF '/data/data/com.termux/files/usr/var/lib/earnapp-setup/service-repair.sh boot || true' "$_repair_script")"
+  "$(grep -cxF '/data/data/com.termux/files/usr/var/lib/service-repair/service-repair.sh boot || true' "$_repair_script")"
 check_eq "migration without a trailing newline exits 0" "0" "$rc"
 
 reset_state
