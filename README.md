@@ -93,12 +93,37 @@ originals over `supervise/`. Re-run the EarnApp setup after upgrading this
 script so an existing service picks up the scoped cleanup files.
 
 APT package transactions can drop a service's `down` marker and silently disable
-it. The setup installs APT pre/post hooks that snapshot enabled services before
-a transaction and re-enable only those that went down during it. The boot script
-also runs `service-repair.sh boot` to finish an interrupted transaction. Both
-only touch services listed in `$PREFIX/var/lib/earnapp-setup/pending-services`,
-so a deliberate `sv down <service>` is left alone. Inspect it with
+it. Service repair uses one helper and one APT hook, shared with the manager:
+
+| File | Path |
+| --- | --- |
+| Helper | `$PREFIX/var/lib/service-repair/service-repair.sh` |
+| Pending state | `$PREFIX/var/lib/service-repair/pending-services` |
+| APT hook | `$PREFIX/etc/apt/apt.conf.d/service-repair` |
+| Log | `$PREFIX/var/log/service-repair.log` |
+
+The pre/post hooks snapshot enabled services before a transaction and re-enable
+only those that went down during it. The boot script runs
+`$PREFIX/var/lib/service-repair/service-repair.sh boot` to finish an interrupted
+transaction. Both only touch services listed in the pending state file, so a
+deliberate `sv down <service>` is left alone. Inspect it with
 `service-repair.sh status`.
+
+An older installation migrates automatically on the next setup run: `base`
+writes the neutral helper and hook, merges any pending service list, and removes
+the old hook; a run that includes `boot` or EarnApp also rewrites the boot-script
+line and updates the EarnApp service files to keep child PIDs in
+`$PREFIX/var/lib/earnapp/earnapp.children`. Old files are removed only once
+nothing references them, and files the setup did not write are left alone: an
+edited old hook, a helper still referenced by a boot script, and a children file
+still referenced by a service file are kept. No PID data is copied; the next
+service start recreates the new children file. Later runs have nothing left to
+migrate.
+
+**Do not downgrade across this change.** An older release recreates the
+`earnapp-setup` helper and hook, and the next run of either version removes them
+again, so alternating versions flip-flop. Update the manager and the EarnApp
+setup tool together.
 
 ## Source
 
