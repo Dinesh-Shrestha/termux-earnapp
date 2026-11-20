@@ -1209,14 +1209,15 @@ ensure_exec_mode() {
 }
 
 write_service() {
-  local uuid=$1 dir control log_run before after
+  local uuid=$1 dir control log_run before after installed
   SERVICE_FILES_CHANGED=0
   dir=$(svc_dir)
   control="$dir/control"
   log_run="$dir/log/run"
   [ -f "$dir/run" ] && before=$(cat "$dir/run" 2>/dev/null || true)
   if [ -f "$dir/run" ] && [ "$DRY_RUN" -eq 0 ]; then
-    if grep -q "$uuid" "$dir/run"; then
+    installed=$(installed_uuid)
+    if [ "$installed" = "$uuid" ]; then
       log INFO "earnapp service already configured for $uuid; refreshing its files"
       write_service_files "$uuid" "$dir" "$control" || die "earnapp service files failed"
       if [ ! -x "$log_run" ] \

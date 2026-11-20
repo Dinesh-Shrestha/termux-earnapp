@@ -945,6 +945,45 @@ else
 fi
 rm -rf "$_upgrade_prefix"
 
+# A manager-owned run file stores the UUID in ENV_FILE, not as a literal. It
+# must be recognised as the same identity: no misleading "different UUID"
+# prompt, and the service files must still be refreshed.
+_wd_mgr_prefix="$(mktemp -d)"
+_wd_mgr_svc="$_wd_mgr_prefix/var/service/earnapp"
+mkdir -p "$_wd_mgr_svc/control" "$_wd_mgr_svc/log"
+printf "EARNAPP_UUID='%s'\n" "$UUIDX" > "$_wd_mgr_prefix/manager.env"
+cat > "$_wd_mgr_svc/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# managed-by: income-manager
+ENV_FILE='$_wd_mgr_prefix/manager.env'
+EOF
+printf '#!/bin/sh\npkill -f "/usr/bin/proot.*udocker-"\n' > "$_wd_mgr_svc/control/t"
+chmod 700 "$_wd_mgr_svc/run" "$_wd_mgr_svc/control/t"
+_wd_mgr_out=$(
+  PREFIX="$_wd_mgr_prefix"
+  ask_yn() { printf '%s\n' "$1" >&2; return 1; }
+  write_service "$UUIDX" 2>&1
+)
+case "$_wd_mgr_out" in
+  *"different UUID"*)
+    fail=$((fail + 1))
+    printf 'FAIL  manager-owned matching UUID must not report a different UUID\n' >&2
+    printf '%s\n' "$_wd_mgr_out" >&2
+    ;;
+  *)
+    pass=$((pass + 1))
+    printf 'PASS  manager-owned matching UUID takes the same-UUID path\n'
+    ;;
+esac
+if grep -qF 'pkill' "$_wd_mgr_svc/control/t" 2>/dev/null; then
+  fail=$((fail + 1))
+  printf 'FAIL  manager-owned matching UUID did not refresh service files\n' >&2
+else
+  pass=$((pass + 1))
+  printf 'PASS  manager-owned matching UUID still refreshes service files\n'
+fi
+rm -rf "$_wd_mgr_prefix"
+
 # --yes must still apply a different UUID. The rewrite branch used to be
 # skipped whenever FLAG_YES was set, so the old identity kept running.
 _wd_saved=${PREFIX:-}
