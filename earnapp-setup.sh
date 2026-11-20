@@ -1047,10 +1047,21 @@ uuid_lower() {
 }
 
 installed_uuid() {
-  local dir
+  local dir env_file value
   dir=$(svc_dir)
   if [ -f "$dir/run" ]; then
-    grep -oE "${UUID_PREFIX}[0-9a-f]{32}" "$dir/run" | head -n 1
+    value=$(grep -oE "${UUID_PREFIX}[0-9a-f]{32}" "$dir/run" | head -n 1)
+    if [ -z "$value" ] && grep -Fq '# managed-by: income-manager' "$dir/run" 2>/dev/null; then
+      env_file=$(sed -n "s/^ENV_FILE='\(.*\)'$/\1/p" "$dir/run" | head -n 1)
+      if [ -n "$env_file" ] && [ -r "$env_file" ]; then
+        value=$(sed -n 's/^EARNAPP_UUID=//p' "$env_file" | head -n 1)
+        value=${value#\'}
+        value=${value%\'}
+        value=$(uuid_lower "$value")
+        validate_uuid "$value" || value=""
+      fi
+    fi
+    [ -n "$value" ] && printf '%s\n' "$value"
   fi
   return 0
 }

@@ -374,6 +374,87 @@ else
   printf 'PASS  uuid_resolve rejects invalid --uuid\n'
 fi
 
+# A manager-owned run file passes EARNAPP_UUID as a variable sourced from
+# ENV_FILE, so the UUID is not written literally in the service file.
+_uuid_env_prefix="$(mktemp -d)"
+mkdir -p "$_uuid_env_prefix/var/service/earnapp"
+_uuid_env_file="$_uuid_env_prefix/manager.env"
+printf "DEVICE_ID='test-device'\nEARNAPP_UUID='%s'\n" "sdk-node-$HEX32" > "$_uuid_env_file"
+cat > "$_uuid_env_prefix/var/service/earnapp/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# managed-by: income-manager
+ENV_FILE='$_uuid_env_file'
+set -- "\$@" -e "EARNAPP_UUID=\$EARNAPP_UUID" earnapp
+EOF
+_saved_uuid_prefix=${PREFIX:-}
+_uuid_had_prefix=${PREFIX+x}
+PREFIX="$_uuid_env_prefix" run_cap installed_uuid
+if [ "$_uuid_had_prefix" = x ]; then PREFIX=$_saved_uuid_prefix; else unset PREFIX; fi
+check_eq "installed_uuid reads manager ENV_FILE" "sdk-node-$HEX32" "$out"
+rm -rf "$_uuid_env_prefix"
+
+# An unreadable manager env file must not yield a UUID or produce noise.
+_uuid_missing_prefix="$(mktemp -d)"
+mkdir -p "$_uuid_missing_prefix/var/service/earnapp"
+cat > "$_uuid_missing_prefix/var/service/earnapp/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# managed-by: income-manager
+ENV_FILE='$_uuid_missing_prefix/missing.env'
+EOF
+_saved_uuid_prefix=${PREFIX:-}
+_uuid_had_prefix=${PREFIX+x}
+PREFIX="$_uuid_missing_prefix" run_cap installed_uuid
+if [ "$_uuid_had_prefix" = x ]; then PREFIX=$_saved_uuid_prefix; else unset PREFIX; fi
+check_eq "installed_uuid ignores a missing manager ENV_FILE" "" "$out"
+rm -rf "$_uuid_missing_prefix"
+
+# A malformed saved identity must not be adopted.
+_uuid_bad_prefix="$(mktemp -d)"
+mkdir -p "$_uuid_bad_prefix/var/service/earnapp"
+printf 'EARNAPP_UUID=not-a-uuid\n' > "$_uuid_bad_prefix/manager.env"
+cat > "$_uuid_bad_prefix/var/service/earnapp/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# managed-by: income-manager
+ENV_FILE='$_uuid_bad_prefix/manager.env'
+EOF
+_saved_uuid_prefix=${PREFIX:-}
+_uuid_had_prefix=${PREFIX+x}
+PREFIX="$_uuid_bad_prefix" run_cap installed_uuid
+if [ "$_uuid_had_prefix" = x ]; then PREFIX=$_saved_uuid_prefix; else unset PREFIX; fi
+check_eq "installed_uuid rejects an invalid manager UUID" "" "$out"
+rm -rf "$_uuid_bad_prefix"
+
+# The EarnApp-owned form must keep working unchanged.
+_uuid_literal_prefix="$(mktemp -d)"
+mkdir -p "$_uuid_literal_prefix/var/service/earnapp"
+printf '#!/bin/sh\nexec udocker run -e EARNAPP_UUID=%s earnapp\n' "sdk-node-$HEX32" \
+  > "$_uuid_literal_prefix/var/service/earnapp/run"
+_saved_uuid_prefix=${PREFIX:-}
+_uuid_had_prefix=${PREFIX+x}
+PREFIX="$_uuid_literal_prefix" run_cap installed_uuid
+if [ "$_uuid_had_prefix" = x ]; then PREFIX=$_saved_uuid_prefix; else unset PREFIX; fi
+check_eq "installed_uuid still reads a literal EarnApp UUID" "sdk-node-$HEX32" "$out"
+rm -rf "$_uuid_literal_prefix"
+
+# End-to-end: a manager rewrite must not change the EarnApp identity.
+_uuid_resolve_prefix="$(mktemp -d)"
+mkdir -p "$_uuid_resolve_prefix/var/service/earnapp"
+printf "EARNAPP_UUID='%s'\n" "sdk-node-$HEX32" > "$_uuid_resolve_prefix/manager.env"
+cat > "$_uuid_resolve_prefix/var/service/earnapp/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+# managed-by: income-manager
+ENV_FILE='$_uuid_resolve_prefix/manager.env'
+set -- "\$@" -e "EARNAPP_UUID=\$EARNAPP_UUID" earnapp
+EOF
+_saved_uuid_prefix=${PREFIX:-}
+_uuid_had_prefix=${PREFIX+x}
+CLI_UUID=""
+DRY_RUN=0 FLAG_YES=1 PREFIX="$_uuid_resolve_prefix" run_cap uuid_resolve
+_resolve_rc=$?
+if [ "$_uuid_had_prefix" = x ]; then PREFIX=$_saved_uuid_prefix; else unset PREFIX; fi
+check "uuid_resolve reuses manager-owned identity" "$out" "Existing UUID found: sdk-node-$HEX32" "$_resolve_rc"
+rm -rf "$_uuid_resolve_prefix"
+
 MOCKDIR="$(mktemp -d)"
 cat > "$MOCKDIR/udocker" <<'MOCK'
 #!/usr/bin/env bash
